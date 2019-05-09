@@ -32,6 +32,10 @@ namespace opflexagent {
         agent.getSpanManager().registerListener(this);
     }
 
+    void SpanRenderer::stop() {
+        agent.getSpanManager().unregisterListener(this);
+    }
+
     void SpanRenderer::spanUpdated(const opflex::modb::URI& spanURI) {
         taskQueue.dispatch(spanURI.toString(),
                            [=]() { handleSpanUpdate(spanURI); });
