@@ -42,20 +42,27 @@ namespace opflexagent {
     }
 
 
+    void SpanRenderer::sessionDeleted(shared_ptr<SessionState> seSt) {
+        deleteMirror(seSt->getName());
+        // There is only one ERSPAN port.
+        deleteErspnPort(ERSPAN_PORT_NAME);
+    }
+
     void SpanRenderer::handleSpanUpdate(const opflex::modb::URI& spanURI) {
         LOG(DEBUG) << "Span handle update";
         SpanManager& spMgr = agent.getSpanManager();
-        optional<shared_ptr<SpanManager::SessionState>> seSt =
+        optional<shared_ptr<SessionState>> seSt =
                                              spMgr.getSessionState(spanURI);
         // Is the session state pointer set
         if (!seSt) {
             return;
         }
         // There should be at least one source and one destination.
-        // need to accomodate for a change from previous configuration.
+        // need to accommodate for a change from previous configuration.
         if (seSt.get()->getSrcEndPointMap().empty() ||
             seSt.get()->getDstEndPointMap().empty()) {
-            LOG(DEBUG) << "Nothing to do";
+            LOG(DEBUG) << "Delete existing mirror if any";
+            sessionDeleted(seSt.get());
             return;
         }
         //get the source ports.
@@ -64,42 +71,51 @@ namespace opflexagent {
             srcPort.push_back(src.second.get()->getPort());
         }
         // get the destination IPs
-        vector<address> dstIp;
+        set<address> dstIp;
         for (auto dst : seSt.get()->getDstEndPointMap()) {
-            dstIp.push_back(dst.second.get()->getAddress());
+            dstIp.insert(dst.second.get()->getAddress());
         }
 
+        // delete existing mirror and erspan port, then create a new one.
+        sessionDeleted(seSt.get());
         LOG(DEBUG) << "creating mirror";
         createMirror(seSt.get()->getName(), srcPort, dstIp);
     }
 
-    bool SpanRenderer::createMirror(std::string sess, std::vector<string> srcPort, std::vector<address> dstIp) {
-        using namespace std;
-        // delete any existing mirror with this name
+    bool SpanRenderer::deleteMirror(string sess) {
         boost::format fmtr("ovs-vsctl -- --id=@rec get mirror %1% -- remove bridge br-int mirrors @rec");
         string cmd = (fmtr % sess).str();
+        int result = system(cmd.c_str());
+    }
+
+    bool SpanRenderer::deleteErspnPort(const string name) {
+        string cmd = "ovs-vsctl del-port br-int " + name;
+        LOG(DEBUG) << cmd;
         int result = std::system(cmd.c_str());
+    }
+    bool SpanRenderer::createMirror(string sess, vector<string> srcPort, set<address> dstIp) {
+        using namespace std;
 
         // setup ERSPAN port
-        fmtr.parse("ovs-vsctl add-port br-int %1%  -- set int %1% type=erspan options:key=1 options:remote_ip=%2% options:erspan_ver=1 options:erspan_idx=1\n");
-        std::vector<string> erspan;
-        string outPort = "output-port=";
-        for (auto dst : dstIp | indexed(1)) {
-            string erspName = sess + "-" + "ersp" + to_string(dst.index());
-            erspan.push_back(erspName);
-            // delete existing ERSPAN port
-            cmd = "ovs-vsctl del-port br-int " + erspName;
-            result = std::system(cmd.c_str());
-            // create erspan port
-            cmd = (fmtr % erspName % dst.value()).str();
-            result = std::system(cmd.c_str());
-        }
-        std::string cmdStr;
-        cmdStr = fmtr.parse("ovs-vsctl -- set bridge br-int mirrors=@m ").str();
+        boost::format fmtr("ovs-vsctl add-port br-int %1%  -- set int %1% type=erspan options:key=1 options:remote_ip=%2% options:erspan_ver=1 options:erspan_idx=1\n");
+        string cmd;
+        int result;
+        string erspName = ERSPAN_PORT_NAME;
+        string outPort = "output-port=@d";
+        // delete existing ERSPAN port if any
+        cmd = "ovs-vsctl del-port br-int " + erspName;
+        result = std::system(cmd.c_str());
+        // create erspan port
+        cmd = (fmtr % erspName % *(dstIp.begin())).str();
+        LOG(DEBUG) << cmd;
+        result = std::system(cmd.c_str());
+
+
+        cmd = fmtr.parse("ovs-vsctl -- set bridge br-int mirrors=@m ").str();
         string srcPortStr = "select-src_port=";
         string dstPortStr = "select-dst-port=";
         for (auto src : srcPort | indexed(1)) {
-            cmdStr += (fmtr.parse("-- --id=@s%1% get port %2% ") % src.index() % src.value()).str();
+            cmd += (fmtr.parse("-- --id=@s%1% get port %2% ") % src.index() % src.value()).str();
             if (srcPortStr.find("@") != std::string::npos) {
                 srcPortStr += ",";
             }
@@ -110,17 +126,11 @@ namespace opflexagent {
             dstPortStr += "@s" + to_string(src.index());
             //cout << "srcPortStr " << srcPortStr << ", dstPortStr " << dstPortStr << '\n';
         }
-        for (auto dst : erspan | indexed(1)) {
-            cmdStr += (fmtr.parse("-- --id=@d%1% get port %2% ") % dst.index() % dst.value()).str();
-            if (outPort.find("@") != std::string::npos) {
-                outPort += ",";
-            }
-            outPort += "@d" + to_string(dst.index());
-        }
-        cmdStr += "-- --id=@m create mirror name=" + sess + " " + srcPortStr + " " + dstPortStr + " " + outPort;
-        cout << cmdStr << '\n';
-        result = std::system(cmdStr.c_str());
+
+        cmd += (fmtr.parse("-- --id=@d get port %1% ") % erspName).str();
+        cmd += "-- --id=@m create mirror name=" + sess + " " + srcPortStr + " " + dstPortStr + " " + outPort;
+        cout << cmd << '\n';
+        result = std::system(cmd.c_str());
         return true;
     }
-
 }

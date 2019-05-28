@@ -101,7 +101,9 @@ libopflex_agent_la_include_HEADERS = \
 	lib/include/opflexagent/cmd.h \
 	lib/include/opflexagent/logging.h \
 	lib/include/opflexagent/SimStats.h \
-	lib/include/opflexagent/SpanManager.h
+	lib/include/opflexagent/SpanSessionState.h \
+	lib/include/opflexagent/SpanListener.h \ 
+	lib/include/opflexagent/SpanManager.h 
 
 noinst_HEADERS = \
 	ovs/include/OVSRenderer.h \
