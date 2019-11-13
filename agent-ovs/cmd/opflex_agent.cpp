@@ -29,7 +29,7 @@
 #include <condition_variable>
 
 #include <csignal>
-#include <string.h>
+#include <cstring>
 
 using std::string;
 namespace po = boost::program_options;
@@ -53,7 +53,7 @@ private:
     }
 };
 
-static void readConfig(Agent& agent, string configFile) {
+static void readConfig(Agent& agent, const string& configFile) {
     pt::ptree properties;
 
     LOG(INFO) << "Reading configuration from " << configFile;
@@ -81,6 +81,16 @@ bool isConfigPath(const fs::path& file) {
         return true;
     }
 
+    return false;
+}
+
+bool isRebootConfigPath(const fs::path& file) {
+    const string fstr = file.filename().string();
+    if (boost::algorithm::ends_with(fstr, ".conf") &&
+        boost::algorithm::starts_with(fstr, "reboot")) {
+        LOG(INFO) << "Config filename: " << fstr;
+        return true;
+    }
     return false;
 }
 
@@ -187,7 +197,7 @@ private:
                 std::set<string> files;
                 for (fs::directory_iterator it(configFile);
                      it != end; ++it) {
-                    if (isConfigPath(it->path())) {
+                    if (isConfigPath(it->path()) && !isRebootConfigPath(it->path())) {
                         files.insert(it->path().string());
                     }
                 }

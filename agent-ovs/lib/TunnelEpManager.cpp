@@ -27,6 +27,7 @@
 
 #include <opflexagent/Agent.h>
 #include <opflexagent/TunnelEpManager.h>
+#include <opflexagent/Renderer.h>
 #include <opflexagent/logging.h>
 
 namespace opflexagent {
@@ -93,6 +94,12 @@ const std::string& TunnelEpManager::getTerminationIp(const std::string& uuid) {
     if (uuid != tunnelEpUUID || terminationIp == "")
         throw std::out_of_range("No such tunnel termination endpoint: " + uuid);
     return terminationIp;
+}
+
+const std::string& TunnelEpManager::getTerminationMac(const std::string& uuid) {
+    if (uuid != tunnelEpUUID || terminationMac == "")
+        throw std::out_of_range("No such tunnel termination endpoint: " + uuid);
+    return terminationMac;
 }
 
 #ifdef HAVE_IFADDRS_H
@@ -162,7 +169,16 @@ void TunnelEpManager::on_timer(const error_code& ec) {
     string bestIface;
     string bestMac;
     bool bestAddrIsV4 = false;
-
+    if(renderer && renderer->isUplinkAddressImplemented()) {
+        boost::asio::ip::address bestAddr = renderer->getUplinkAddress();
+        if(!bestAddr.is_unspecified()) {
+            bestAddress = bestAddr.to_string();
+        }
+        string l2_address = renderer->getUplinkMac();
+        if(l2_address.length()==17) {
+            bestMac = renderer->getUplinkMac();
+        }
+    } else {
 #ifdef HAVE_IFADDRS_H
     // This is linux-specific.  Other plaforms will require their own
     // platform-specific interface enumeration.
@@ -246,6 +262,7 @@ void TunnelEpManager::on_timer(const error_code& ec) {
     terminationIpIsV4 = bestAddrIsV4;
 
 #endif
+    }
 
     if ((!bestAddress.empty() && bestAddress != terminationIp) ||
         (!bestMac.empty() && bestMac != terminationMac)) {
@@ -253,6 +270,7 @@ void TunnelEpManager::on_timer(const error_code& ec) {
             unique_lock<mutex> guard(termip_mutex);
             terminationIp = bestAddress;
             terminationMac = bestMac;
+            agent->setUplinkMac(bestMac);
         }
 
         LOG(INFO) << "Discovered uplink IP: " << bestAddress

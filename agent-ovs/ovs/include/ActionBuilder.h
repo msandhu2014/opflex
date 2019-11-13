@@ -263,6 +263,19 @@ public:
     ActionBuilder& popVlan();
 
     /**
+     * Set nat action in conntrack
+     */
+    ActionBuilder& nat(const boost::asio::ip::address& natIp,
+                       uint16_t protoMin,
+                       uint16_t protoMax,
+                       bool snat);
+
+   /**
+    * unnat action
+    */
+    ActionBuilder& unnat();
+
+    /**
      * Flas for conn track action
      */
     enum ConnTrackFlags {
@@ -381,6 +394,12 @@ public:
     ActionBuilder& macVlanLearn(uint16_t prio,
                                 uint64_t cookie,
                                 uint8_t table);
+    /**
+     * Fill tunnel metadata with current openflow state
+     *
+     * @param table_id the table in which the drop/log occured.
+     */
+    ActionBuilder& dropLog(uint32_t table_id);
 
     /**
      * Extract and return an array of flow actions from a buffer used

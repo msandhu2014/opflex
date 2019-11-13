@@ -12,7 +12,7 @@
 # ---------------------------------------------------------------
 # Initialization
 
-AC_INIT([opflex-agent], [1.10.0])
+AC_INIT([opflex-agent], [2.1.0])
 AC_SUBST(MODULE_NAME, ["Group-based Policy Agent"])
 
 dnl For more information on libtool versioning, see:
@@ -35,7 +35,7 @@ dnl     then increment age.
 dnl  6. If any interfaces have been removed since the last public
 dnl     release, then set age to 0.
 
-AC_SUBST(VERSION_INFO, [10:0:10])
+AC_SUBST(VERSION_INFO, [13:0:13])
 
 # initialize automake and libtool
 AM_INIT_AUTOMAKE([subdir-objects])
@@ -93,27 +93,13 @@ AM_COND_IF([RENDERER_OVS],
            [AC_MSG_NOTICE([Open vSwitch renderer is enabled])],
            [AC_MSG_NOTICE([Open vSwitch renderer is disabled])])
 
-# --with-static-boost enables linking with a static boost library
-# Disabled by default
-# --with-static-boost also requires --with-boost that points to
-# boost location with boost static libraries compiled with -fPIC
-# option to enable linking them with shared libraries.
-AC_ARG_WITH([static-boost],
-            [AS_HELP_STRING([--with-static-boost],[Enable static boost support])],
-            [],[with_static_boost=no])
-AS_IF([test "x$with_static_boost" != xno], [
-      AC_ARG_WITH([boost],
-                  [AS_HELP_STRING([--with-boost],[Use boost from location])],
-                  [], [AC_MSG_FAILURE([--with-static-boost given, but --with-boost is missing])])
-])
-AM_CONDITIONAL([HAVE_STATIC_BOOST],[test "x$with_static_boost" != 'xno'])
-if test "x$with_static_boost" != xno; then
-   AC_SUBST(BOOST_STATIC_LIB_DIR, [${with_boost}/lib])
-   AC_MSG_NOTICE([Building with Static boost libraries from $with_boost/lib])
-else
-   AC_MSG_NOTICE([Building without Static boost libraries])
-fi
-
+# Enable grpc support, disabled by default
+AC_ARG_ENABLE(grpc,
+              AC_HELP_STRING([--enable-grpc], [Enable Grpc support]))
+AM_CONDITIONAL(ENABLE_GRPC, [test x$enable_grpc = 'xyes'])
+AM_COND_IF([ENABLE_GRPC],
+          [AC_MSG_NOTICE([GRPC is enabled])],
+          [AC_MSG_NOTICE([GRPC is disabled])])
 # ---------------------------------------------------------------
 # Dependency checks
 
@@ -150,19 +136,32 @@ if test "x$ax_cv_boost_asio" != xyes; then
     AC_MSG_ERROR([Boost::ASIO library is required])
 fi
 
-PKG_CHECK_MODULES([libopflex], [libopflex >= 1.10.0])
-PKG_CHECK_MODULES([libmodelgbp], [libmodelgbp >= 1.10.0])
-PKG_CHECK_MODULES([rapidjson], [RapidJSON >= 1.0])
+PKG_CHECK_MODULES([libopflex], [libopflex >= 2.1.0])
+PKG_CHECK_MODULES([libmodelgbp], [libmodelgbp >= 2.1.0])
+PKG_CHECK_MODULES([rapidjson], [RapidJSON >= 1.1])
 
 AM_COND_IF([RENDERER_OVS], [
     # check for libopenvswitch
-    PKG_CHECK_MODULES([libofproto], [libofproto >= 2.6.0])
-    PKG_CHECK_MODULES([libopenvswitch], [libopenvswitch >= 2.6.0])
+    PKG_CHECK_MODULES([libofproto], [libofproto >= 2.6.7])
+    PKG_CHECK_MODULES([libopenvswitch], [libopenvswitch >= 2.6.7])
 
     # check for libnetfilter-conntrack
     PKG_CHECK_MODULES([libnfct], [libnetfilter_conntrack >= 1.0.0],
                       [AC_DEFINE([HAVE_LIBNFCT], [1], [Use libnfct])],
                       AC_MSG_WARN([libnetfilter_conntrack not found]))
+])
+
+AM_COND_IF([ENABLE_GRPC], [
+    # check for grpc++
+    PKG_CHECK_MODULES([GRPC], [grpc++], [grpc_found=yes], [grpc_found=no])
+    # check for protobuf
+    PKG_CHECK_MODULES([PROTOBUF], [protobuf],
+                     [protobuf_found=yes], [protobuf_found=no])
+    AS_IF([test x$grpc_found = 'xyes' && test x$protobuf_found = 'xyes'], [
+        AC_DEFINE([HAVE_GRPC_SUPPORT],[1],[Define if grpc support is enabled])
+    ], [
+        AC_MSG_ERROR([***GRPC requested but not found ***])
+    ])
 ])
 
 # inotify check

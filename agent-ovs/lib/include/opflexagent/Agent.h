@@ -20,6 +20,7 @@
 #include <opflexagent/NotifServer.h>
 #include <opflexagent/FSWatcher.h>
 #include <opflexagent/SpanManager.h>
+#include <opflexagent/SnatManager.h>
 
 #include <boost/property_tree/ptree.hpp>
 #include <boost/optional.hpp>
@@ -44,7 +45,9 @@ class EndpointSource;
 class ServiceSource;
 class FSRDConfigSource;
 class LearningBridgeSource;
+class SnatSource;
 class SimStats;
+class FSPacketDropLogConfigSource;
 
 enum StatMode { REAL, SIM, OFF };
 
@@ -105,6 +108,11 @@ public:
     PolicyManager& getPolicyManager() { return policyManager; }
 
     /**
+     * Get the span manager object for this agent
+     */
+    SpanManager& getSpanManager() { return spanManager; }
+
+    /**
      * Get the endpoint manager object for this agent
      */
     EndpointManager& getEndpointManager() { return endpointManager; }
@@ -118,6 +126,11 @@ public:
      * Get the extra config manager object for this agent
      */
     ExtraConfigManager& getExtraConfigManager() { return extraConfigManager; }
+
+    /**
+     * Get the snat manager object for this agent
+     */
+    SnatManager& getSnatManager() { return snatManager; }
 
     /**
      * Get renderer forwarding mode for this agent
@@ -216,6 +229,12 @@ public:
      */
     void setInterfaceInterval(const long interval) { interfaceInterval = interval; }
     /**
+     * Set valid uplink mac discovered from TunnelEpManager.
+     * @param  mac - Mac address in canonical form xx:xx (17 chars)
+     */
+    void setUplinkMac(const std::string &mac);
+
+    /**
      * A class used as a POD (Plain Old Data) object
      * to pass counter settings around.
      */
@@ -231,6 +250,21 @@ public:
         long interval;
     };
 
+    /**
+     * get OVSDB IP address
+     */
+    const std::string& getOvsdbIpAddress() { return ovsdbIpAddress; }
+
+    /**
+     * get OVSDB port
+     */
+    const unsigned long getOvsdbPort() { return ovsdbPort; }
+
+    /**
+     * get OVSDB bridge name
+     */
+    const std::string& getOvsdbBridge() { return ovsdbBridge; }
+
 private:
     boost::asio::io_service agent_io;
     std::unique_ptr<boost::asio::io_service::work> io_work;
@@ -241,6 +275,7 @@ private:
     ServiceManager serviceManager;
     ExtraConfigManager extraConfigManager;
     LearningBridgeManager learningBridgeManager;
+    SnatManager snatManager;
     NotifServer notifServer;
     FSWatcher fsWatcher;
     opflex_elem_t rendererFwdMode;
@@ -268,9 +303,14 @@ private:
     std::vector<std::unique_ptr<EndpointSource>> endpointSources;
     std::vector<std::unique_ptr<FSRDConfigSource>> rdConfigSources;
     std::vector<std::unique_ptr<LearningBridgeSource>> learningBridgeSources;
+    std::string dropLogCfgSourcePath;
+    std::unique_ptr<FSPacketDropLogConfigSource> dropLogCfgSource;
 
     std::set<std::string> serviceSourcePaths;
     std::vector<std::unique_ptr<ServiceSource>> serviceSources;
+
+    std::set<std::string> snatSourcePaths;
+    std::vector<std::unique_ptr<SnatSource>> snatSources;
 
     std::unordered_set<std::string> rendPluginLibs;
     std::unordered_set<void*> rendPluginHandles;
@@ -298,7 +338,6 @@ private:
     std::string uuid;
 
     StatMode getStatModeFromString(const std::string& mode);
-    int setInterval(int& upd_interval);
 
     void setSimStatProperties(const std::string& enabled_prop,
                               const std::string& interval_prop,
@@ -309,6 +348,11 @@ private:
     long interfaceInterval;
 
     SpanManager spanManager;
+
+    // ovsdb parameters
+    std::string ovsdbIpAddress;
+    unsigned long ovsdbPort;
+    std::string ovsdbBridge;
 };
 
 } /* namespace opflexagent */

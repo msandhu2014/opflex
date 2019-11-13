@@ -7,7 +7,6 @@
  */
 
 #include <algorithm>
-#include <boost/assert.hpp>
 
 #include "ActionBuilder.h"
 #include "FlowBuilder.h"
@@ -207,6 +206,25 @@ ActionBuilder& ActionBuilder::popVlan() {
     return *this;
 }
 
+ActionBuilder& ActionBuilder::nat(const address& natIp,
+                                  uint16_t protoMin,
+                                  uint16_t protoMax,
+                                  bool snat) {
+    if (natIp.is_v4()) {
+        act_nat(buf,
+                htonl(natIp.to_v4().to_ulong()), 0,
+                protoMin,
+                protoMax,
+                snat);
+    }
+    return *this;
+}
+
+ActionBuilder& ActionBuilder::unnat() {
+        act_unnat(buf);
+        return *this;
+}
+
 ActionBuilder&
 ActionBuilder::conntrack(uint16_t flags,
                          mf_field_id zoneSrc,
@@ -240,6 +258,28 @@ ActionBuilder& ActionBuilder::macVlanLearn(uint16_t prio,
                                            uint64_t cookie,
                                            uint8_t table) {
     act_macvlan_learn(buf, prio, cookie, table);
+    return *this;
+}
+
+ActionBuilder& ActionBuilder::dropLog(uint32_t table_id) {
+    this->regMove(MFF_REG0, MFF_TUN_METADATA0, 0, 0, 32);
+    this->regMove(MFF_REG1, MFF_TUN_METADATA1, 0, 0, 32);
+    this->regMove(MFF_REG2, MFF_TUN_METADATA2, 0, 0, 32);
+    this->regMove(MFF_REG3, MFF_TUN_METADATA3, 0, 0, 32);
+    this->regMove(MFF_REG4, MFF_TUN_METADATA4, 0, 0, 32);
+    this->regMove(MFF_REG5, MFF_TUN_METADATA5, 0, 0, 32);
+    this->regMove(MFF_REG6, MFF_TUN_METADATA6, 0, 0, 32);
+    this->regMove(MFF_REG7, MFF_TUN_METADATA7, 0, 0, 32);
+    //Metadata cannot be moved to a register-> so skipping this
+    //TBD: Find a way to make this happen
+    //this->regMove(MFF_METADATA, MFF_TUN_METADATA8, 0, 0, 64);
+    this->regMove(MFF_CT_STATE, MFF_TUN_METADATA8, 0, 0, 32);
+    this->regMove(MFF_CT_ZONE, MFF_TUN_METADATA9, 0, 0, 16);
+    this->regMove(MFF_CT_MARK, MFF_TUN_METADATA10, 0, 0, 32);
+    this->regMove(MFF_CT_LABEL, MFF_TUN_METADATA11, 0, 0, 128);
+    //TBD: loading value fails unless TLV option is set in ovsdb
+    //Find a way to set this in automated tests.
+    //this->reg(MFF_TUN_METADATA12, table_id);
     return *this;
 }
 

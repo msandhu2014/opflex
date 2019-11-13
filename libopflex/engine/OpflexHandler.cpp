@@ -16,9 +16,7 @@
 
 
 #include <vector>
-#include <utility>
 
-#include <boost/foreach.hpp>
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
@@ -27,6 +25,7 @@
 #include "opflex/engine/internal/OpflexHandler.h"
 #include "opflex/engine/internal/OpflexMessage.h"
 #include "opflex/engine/Processor.h"
+#include "opflex/engine/internal/OvsdbConnection.h"
 
 #include "opflex/logging/internal/logging.hpp"
 #include <yajr/yajr.hpp>
@@ -316,6 +315,29 @@ template<>
 void InbErr<&yajr::rpc::method::custom>::process() const {
     HANDLE_RES_BASE(CustomErr);
 }
+
+/*
+ * method implementations for JSON/RPC messages not used with
+ * opflex protocol.
+ */
+template<>
+void InbRes<&yajr::rpc::method::transact>::process() const {
+    VLOG(5) << "calling InbRes transact";
+    ((opflex::engine::internal::OvsdbConnection*)getPeer()->getData())
+            ->handleTransaction(getLocalId().id_, getPayload());
+}
+
+template<>
+void InbReq<&yajr::rpc::method::transact>::process() const {
+    VLOG(5) << "calling InbReq transact";
+    getPeer()->getData();
+}
+
+template<>
+void InbErr<&yajr::rpc::method::transact>::process() const {
+    VLOG(5) << "calling InbErr transact";
+}
+
 
 } /* namespace rpc */
 } /* namespace yajr */

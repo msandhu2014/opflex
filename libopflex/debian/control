@@ -3,9 +3,9 @@ Priority: optional
 Maintainer: OpFlex Developers <opflex-dev@lists.opendaylight.org>
 Build-Depends:
  debhelper (>= 8.0.0), autotools-dev, libuv1-dev,
- libboost-dev, libboost-system-dev, libboost-test-dev, doxygen, pkgconf, rapidjson-dev (>= 1.0),
+ libboost-dev, libboost-system-dev, libboost-test-dev, doxygen, pkgconf, rapidjson-dev (>= 1.1),
  libssl-dev (>= 1.0.1)
-Standards-Version: 3.9.4
+Standards-Version: 3.9.8
 Section: libs
 Homepage: https://wiki.opendaylight.org/view/OpFlex:Main
 

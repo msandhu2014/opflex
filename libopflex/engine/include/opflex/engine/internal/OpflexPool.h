@@ -27,6 +27,7 @@
 #include "opflex/engine/internal/OpflexClientConnection.h"
 #include "opflex/ofcore/PeerStatusListener.h"
 #include "opflex/ofcore/OFTypes.h"
+#include "opflex/modb/MAC.h"
 #include "yajr/transport/ZeroCopyOpenSSL.hpp"
 #include "ThreadManager.h"
 
@@ -199,6 +200,8 @@ public:
      */
     OpflexClientConnection* getPeer(const std::string& hostname, int port);
 
+    void resetAllPeers();
+
     /**
      * Register the given peer status listener to get updates on the
      * health of the connection pool and on individual connections.
@@ -273,9 +276,11 @@ size_t getRoleCount(ofcore::OFConstants::OpflexRole role);
      * configured peers and the peers that appear in the provided set
      * of peer names.
      *
+     * @param conn the current connection on which peer set was received
      * @param peerNames the set of peer names to validate against
      */
-    void validatePeerSet(const peer_name_set_t& peers);
+    void validatePeerSet(OpflexClientConnection *conn,
+        const peer_name_set_t& peers);
 
     /**
      * Add configured peers back into the connection pool
@@ -320,6 +325,14 @@ size_t getRoleCount(ofcore::OFConstants::OpflexRole role);
     void setTransportModeState(
        opflex::ofcore::OFConstants::OpflexTransportModeState state) {
          transport_state = state;
+    }
+
+    void setTunnelMac(const opflex::modb::MAC &mac) {
+        tunnelMac = mac;
+    }
+
+    opflex::modb::MAC getTunnelMac() {
+        return tunnelMac;
     }
 
 private:
@@ -369,6 +382,7 @@ private:
     boost::asio::ip::address_v4 ipv4_proxy;
     boost::asio::ip::address_v4 ipv6_proxy;
     boost::asio::ip::address_v4 mac_proxy;
+    opflex::modb::MAC tunnelMac;
 
     uv_loop_t* client_loop;
     uv_async_t conn_async;

@@ -22,6 +22,7 @@
 #include <opflexagent/TunnelEpManager.h>
 #include "PacketInHandler.h"
 #include "CtZoneManager.h"
+#include "SpanRenderer.h"
 
 #pragma once
 #ifndef OPFLEXAGENT_OVSRENDERER_H
@@ -65,6 +66,7 @@ private:
     FlowReader intFlowReader;
     PortMapper intPortMapper;
     SwitchManager intSwitchManager;
+    TunnelEpManager tunnelEpManager;
     IntFlowManager intFlowManager;
 
     FlowExecutor accessFlowExecutor;
@@ -78,7 +80,6 @@ private:
     InterfaceStatsManager interfaceStatsManager;
     ContractStatsManager contractStatsManager;
     SecGrpStatsManager secGrpStatsManager;
-    TunnelEpManager tunnelEpManager;
 
     std::string intBridgeName;
     std::string accessBridgeName;
@@ -92,6 +93,8 @@ private:
     std::string virtualRouterMac;
     bool routerAdv;
     AdvertManager::EndpointAdvMode endpointAdvMode;
+    AdvertManager::EndpointAdvMode tunnelEndpointAdvMode;
+    uint64_t tunnelEndpointAdvIntvl;
     bool virtualDHCP;
     std::string virtualDHCPMac;
     std::string flowIdCache;
@@ -107,7 +110,11 @@ private:
     bool secGroupStatsEnabled;
     long secGroupStatsInterval;
 
+    SpanRenderer spanRenderer;
+
     bool started;
+    std::string dropLogIntIface, dropLogAccessIface, dropLogRemoteIp;
+    uint16_t dropLogRemotePort;
 
     /**
      * Timer callback to clean up IDs that have been erased

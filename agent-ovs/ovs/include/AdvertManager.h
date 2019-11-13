@@ -81,13 +81,22 @@ public:
          * Unicast a spoofed request/solicitation for the subnet's
          * gateway router.
          */
-        EPADV_ROUTER_REQUEST
+        EPADV_ROUTER_REQUEST,
+        /**
+         * Broadcast RARP endpoint advertisements. Only for TunnelEp
+         */
+        EPADV_RARP_BROADCAST
     };
 
     /**
      * Enable gratuitous endpoint advertisements
      */
     void enableEndpointAdv(EndpointAdvMode mode) { sendEndpointAdv = mode; }
+
+    void enableTunnelEndpointAdv(EndpointAdvMode tunnelMode,
+            uint64_t delay = 300)
+    { tunnelEndpointAdv = tunnelMode;
+      tunnelEpAdvInterval = delay;}
 
     /**
      * Module start
@@ -132,6 +141,13 @@ public:
      * @param uuid the uuid of the service
      */
     void scheduleServiceAdv(const std::string& uuid);
+
+    /**
+     * Schedule tunnelEp RARP advertisement
+     *
+     * @param uuid the uuid of the tunnelEp
+     */
+    void scheduleTunnelEpAdv(const std::string& uuid);
 
 private:
     std::random_device rng;
@@ -181,18 +197,32 @@ private:
     void sendServiceAdvs(const std::string& uuid);
 
     /**
+     * Synchronously send advertisements for tunnel endpoints
+     *
+     * @param uuid the UUID of the tunnel ep
+     */
+    void sendTunnelEpAdvs(const std::string& uuid);
+
+    /**
      * Timer callback for gratuitious endpoint advertisements
      */
     EndpointAdvMode sendEndpointAdv;
+    EndpointAdvMode tunnelEndpointAdv;
+    uint64_t tunnelEpAdvInterval;
     void onEndpointAdvTimer(const boost::system::error_code& ec);
     void onAllEndpointAdvTimer(const boost::system::error_code& ec);
     void doScheduleEpAdv(uint64_t time = 250);
+    void onTunnelEpAdvTimer(const boost::system::error_code& ec);
+    void doScheduleTunnelEpAdv(uint64_t time = 1);
     std::unique_ptr<boost::asio::deadline_timer> endpointAdvTimer;
     std::unique_ptr<boost::asio::deadline_timer> allEndpointAdvTimer;
+    std::unique_ptr<boost::asio::deadline_timer> tunnelEpAdvTimer;
     std::mutex ep_mutex;
+    std::mutex tunnelep_mutex;
     typedef std::unordered_map<std::string, uint8_t> pending_ep_map_t;
     pending_ep_map_t pendingEps;
     pending_ep_map_t pendingServices;
+    pending_ep_map_t pendingTunnelEps;
 
     Agent& agent;
     IntFlowManager& intFlowManager;

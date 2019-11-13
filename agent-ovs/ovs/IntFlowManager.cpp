@@ -8,12 +8,9 @@
 
 #include <string>
 #include <cstdlib>
-#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <boost/system/error_code.hpp>
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/trim.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/lexical_cast.hpp>
@@ -26,8 +23,9 @@
 #include <modelgbp/gbp/BcastFloodModeEnumT.hpp>
 #include <modelgbp/gbp/AddressResModeEnumT.hpp>
 #include <modelgbp/gbp/RoutingModeEnumT.hpp>
-#include <modelgbp/gbp/ConnTrackEnumT.hpp>
 #include <modelgbp/platform/RemoteInventoryTypeEnumT.hpp>
+#include <modelgbp/observer/DropLogModeEnumT.hpp>
+#include <modelgbp/gbp/EnforcementPreferenceTypeEnumT.hpp>
 
 #include <opflexagent/logging.h>
 #include <opflexagent/Endpoint.h>
@@ -57,7 +55,7 @@ using std::ostringstream;
 using std::shared_ptr;
 using std::unordered_set;
 using std::unordered_map;
-using boost::algorithm::trim;
+using std::pair;
 using boost::optional;
 using boost::asio::deadline_timer;
 using boost::asio::ip::address;
@@ -91,9 +89,11 @@ IntFlowManager::IntFlowManager(Agent& agent_,
                                SwitchManager& switchManager_,
                                IdGenerator& idGen_,
                                CtZoneManager& ctZoneManager_,
-                               PacketInHandler& pktInHandler_) :
+                               PacketInHandler& pktInHandler_,
+                               TunnelEpManager& tunnelEpManager_) :
     agent(agent_), switchManager(switchManager_), idGen(idGen_),
     ctZoneManager(ctZoneManager_), pktInHandler(pktInHandler_),
+    tunnelEpManager(tunnelEpManager_),
     taskQueue(agent.getAgentIOService()), encapType(ENCAP_NONE),
     floodScope(FLOOD_DOMAIN), tunnelPortStr("4789"),
     virtualRouterEnabled(false), routerAdv(false),
@@ -133,6 +133,8 @@ void IntFlowManager::registerModbListeners() {
     agent.getExtraConfigManager().registerListener(this);
     agent.getLearningBridgeManager().registerListener(this);
     agent.getPolicyManager().registerListener(this);
+    agent.getSnatManager().registerListener(this);
+    tunnelEpManager.registerListener(this);
 }
 
 void IntFlowManager::stop() {
@@ -143,6 +145,8 @@ void IntFlowManager::stop() {
     agent.getExtraConfigManager().unregisterListener(this);
     agent.getLearningBridgeManager().unregisterListener(this);
     agent.getPolicyManager().unregisterListener(this);
+    agent.getSnatManager().unregisterListener(this);
+    tunnelEpManager.unregisterListener(this);
 
     advertManager.stop();
     switchManager.getPortMapper().unregisterPortStatusListener(this);
@@ -186,6 +190,22 @@ void IntFlowManager::setTunnel(const string& tunnelRemoteIp,
     tunnelPortStr = ss.str();
 }
 
+void IntFlowManager::setDropLog(const string& dropLogPort, const string& dropLogRemoteIp,
+        const uint16_t _dropLogRemotePort) {
+    dropLogIface = dropLogPort;
+    boost::system::error_code ec;
+    address tunDst = address::from_string(dropLogRemoteIp, ec);
+    if (ec) {
+        LOG(ERROR) << "Invalid drop-log tunnel destination IP: "
+                   << dropLogRemoteIp << ": " << ec.message();
+    } else if (tunDst.is_v6()) {
+        LOG(ERROR) << "IPv6 drop-log tunnel destinations are not supported";
+    } else {
+        dropLogDst = tunDst;
+    }
+    dropLogRemotePort = _dropLogRemotePort;
+}
+
 void IntFlowManager::setVirtualRouter(bool virtualRouterEnabled,
                                       bool routerAdv,
                                       const string& virtualRouterMac) {
@@ -209,9 +229,12 @@ void IntFlowManager::setVirtualDHCP(bool dhcpEnabled,
     }
 }
 
-void IntFlowManager::setEndpointAdv(AdvertManager::EndpointAdvMode mode) {
+void IntFlowManager::setEndpointAdv(AdvertManager::EndpointAdvMode mode,
+        AdvertManager::EndpointAdvMode tunnelMode,
+        uint64_t tunnelAdvIntvl) {
     if (mode != AdvertManager::EPADV_DISABLED)
         advertManager.enableEndpointAdv(mode);
+    advertManager.enableTunnelEndpointAdv(tunnelMode, tunnelAdvIntvl);
 }
 
 void IntFlowManager::setMulticastGroupFile(const std::string& mcastGroupFile) {
@@ -245,6 +268,10 @@ address IntFlowManager::getEPGTunnelDst(const URI& epgURI) {
 void IntFlowManager::endpointUpdated(const std::string& uuid) {
     if (stopping) return;
 
+    if(tunnelEpManager.isTunnelEp(uuid)){
+        advertManager.scheduleTunnelEpAdv(uuid);
+        return;
+    }
     advertManager.scheduleEndpointAdv(uuid);
     taskQueue.dispatch(uuid, [=]() { handleEndpointUpdate(uuid); });
 }
@@ -264,6 +291,98 @@ void IntFlowManager::serviceUpdated(const std::string& uuid) {
 
 void IntFlowManager::rdConfigUpdated(const opflex::modb::URI& rdURI) {
     domainUpdated(RoutingDomain::CLASS_ID, rdURI);
+}
+
+void IntFlowManager::packetDropLogConfigUpdated(const opflex::modb::URI& dropLogCfgURI) {
+    using modelgbp::observer::DropLogConfig;
+    using modelgbp::observer::DropLogModeEnumT;
+    FlowEntryList dropLogFlows;
+    optional<shared_ptr<DropLogConfig>> dropLogCfg =
+            DropLogConfig::resolve(agent.getFramework(), dropLogCfgURI);
+    if(!dropLogCfg) {
+        FlowBuilder().priority(2)
+                .action().go(IntFlowManager::SEC_TABLE_ID)
+                .parent().build(dropLogFlows);
+        switchManager.writeFlow("DropLogConfig", DROP_LOG_TABLE_ID, dropLogFlows);
+        return;
+    }
+    if(dropLogCfg.get()->getDropLogEnable(0) != 0) {
+        if(dropLogCfg.get()->getDropLogMode(
+                    DropLogModeEnumT::CONST_UNFILTERED_DROP_LOG) ==
+           DropLogModeEnumT::CONST_UNFILTERED_DROP_LOG) {
+            FlowBuilder().priority(2)
+                    .action()
+                    .metadata(flow::meta::DROP_LOG,
+                              flow::meta::DROP_LOG)
+                    .go(IntFlowManager::SEC_TABLE_ID)
+                    .parent().build(dropLogFlows);
+        } else {
+            switchManager.clearFlows("DropLogConfig", DROP_LOG_TABLE_ID);
+            return;
+        }
+    } else {
+        FlowBuilder().priority(2)
+                .action()
+                .go(IntFlowManager::SEC_TABLE_ID)
+                .parent().build(dropLogFlows);
+    }
+    switchManager.writeFlow("DropLogConfig", DROP_LOG_TABLE_ID, dropLogFlows);
+}
+
+void IntFlowManager::packetDropFlowConfigUpdated(const opflex::modb::URI& dropFlowCfgURI) {
+    using modelgbp::observer::DropFlowConfig;
+    optional<shared_ptr<DropFlowConfig>> dropFlowCfg =
+            DropFlowConfig::resolve(agent.getFramework(), dropFlowCfgURI);
+    if(!dropFlowCfg) {
+        switchManager.clearFlows(dropFlowCfgURI.toString(), DROP_LOG_TABLE_ID);
+        return;
+    }
+    FlowEntryList dropLogFlows;
+    FlowBuilder fb;
+    fb.priority(1);
+    if(dropFlowCfg.get()->isEthTypeSet()) {
+        fb.ethType(dropFlowCfg.get()->getEthType(0));
+    }
+    if(dropFlowCfg.get()->isInnerSrcAddressSet()) {
+        const std::string &innerSrc =
+                dropFlowCfg.get()->getInnerSrcAddress("");
+        address addr = address::from_string(innerSrc);
+        fb.ipSrc(addr);
+    }
+    if(dropFlowCfg.get()->isInnerDstAddressSet()) {
+        const std::string &innerDst =
+                dropFlowCfg.get()->getInnerDstAddress("");
+        address addr = address::from_string(innerDst);
+        fb.ipDst(addr);
+    }
+    if(dropFlowCfg.get()->isOuterSrcAddressSet()) {
+        const std::string &outerSrc =
+                dropFlowCfg.get()->getOuterSrcAddress("");
+        address addr = address::from_string(outerSrc);
+        fb.outerIpSrc(addr);
+    }
+    if(dropFlowCfg.get()->isOuterDstAddressSet()) {
+        const std::string &outerDst =
+                dropFlowCfg.get()->getOuterSrcAddress("");
+        address addr = address::from_string(outerDst);
+        fb.outerIpDst(addr);
+    }
+    if(dropFlowCfg.get()->isTunnelIdSet()) {
+        fb.tunId(dropFlowCfg.get()->getTunnelId(0));
+    }
+    if(dropFlowCfg.get()->isIpProtoSet()) {
+        fb.proto(dropFlowCfg.get()->getIpProto(0));
+    }
+    if(dropFlowCfg.get()->isSrcPortSet()) {
+        fb.tpSrc(dropFlowCfg.get()->getSrcPort(0));
+    }
+    if(dropFlowCfg.get()->isDstPortSet()) {
+        fb.tpDst(dropFlowCfg.get()->getDstPort(0));
+    }
+    fb.action().metadata(flow::meta::DROP_LOG, flow::meta::DROP_LOG)
+            .go(IntFlowManager::SEC_TABLE_ID).parent().build(dropLogFlows);
+    switchManager.writeFlow(dropFlowCfgURI.toString(), DROP_LOG_TABLE_ID,
+            dropLogFlows);
 }
 
 void IntFlowManager::lbIfaceUpdated(const std::string& uuid) {
@@ -314,6 +433,12 @@ void IntFlowManager::portStatusUpdate(const string& portName,
         .dispatch([=]() {
                 handlePortStatusUpdate(portName, portNo);
             });
+}
+
+void IntFlowManager::snatUpdated(const std::string& snatIp,
+                                 const std::string& uuid) {
+    if (stopping) return;
+    taskQueue.dispatch(uuid, [=]() { handleSnatUpdate(snatIp, uuid); });
 }
 
 void IntFlowManager::peerStatusUpdated(const std::string&, int,
@@ -1072,7 +1197,7 @@ static void matchActionServiceProto(FlowBuilder& flow, uint8_t proto,
 static void flowRevMapCt(FlowEntryList& serviceRevFlows,
                          uint16_t priority,
                          const Service::ServiceMapping& sm,
-                         address nextHopAddr,
+                         const address& nextHopAddr,
                          uint32_t rdId,
                          uint16_t zoneId,
                          uint8_t proto,
@@ -1135,12 +1260,15 @@ void IntFlowManager::handleRemoteEndpointUpdate(const string& uuid) {
 
     // Get remote tunnel destination
     optional<address> tunDst;
+    bool hasTunDest = false;
     if (ep.get()->isNextHopTunnelSet()) {
         string ipStr = ep.get()->getNextHopTunnel().get();
         tunDst = address::from_string(ipStr, ec);
         if (ec || !tunDst->is_v4()) {
             LOG(WARNING) << "Invalid remote tunnel destination IP: "
                          << ipStr << ": " << ec.message();
+        } else {
+            hasTunDest = true;
         }
     }
 
@@ -1160,17 +1288,29 @@ void IntFlowManager::handleRemoteEndpointUpdate(const string& uuid) {
     FlowEntryList elBridgeDst;
     FlowEntryList elRouteDst;
 
-    if (hasMac && hasForwardingInfo && tunDst) {
+    if (hasForwardingInfo) {
         FlowBuilder bridgeFlow;
-        matchDestDom(bridgeFlow, bdId, 0)
-            .priority(10)
-            .ethDst(macAddr)
-            .action()
-            .reg(MFF_REG2, epgVnid)
-            .reg(MFF_REG7, tunDst->to_v4().to_ulong())
-            .metadata(flow::meta::out::REMOTE_TUNNEL, flow::meta::out::MASK)
-            .go(POL_TABLE_ID)
-            .parent().build(elBridgeDst);
+        uint32_t outReg = 0;
+        uint64_t meta;
+
+        if (hasTunDest) {
+            outReg = tunDst->to_v4().to_ulong();
+            meta = flow::meta::out::REMOTE_TUNNEL;
+        } else {
+            meta = flow::meta::out::HOST_ACCESS;
+        }
+
+        if (hasMac) {
+            matchDestDom(bridgeFlow, bdId, 0)
+                .priority(10)
+                .ethDst(macAddr)
+                .action()
+                .reg(MFF_REG2, epgVnid)
+                .reg(MFF_REG7, outReg)
+                .metadata(meta, flow::meta::out::MASK)
+                .go(POL_TABLE_ID)
+                .parent().build(elBridgeDst);
+        }
 
         for (const address& ipAddr : ipAddresses) {
             FlowBuilder routeFlow;
@@ -1181,8 +1321,8 @@ void IntFlowManager::handleRemoteEndpointUpdate(const string& uuid) {
                 .ipDst(ipAddr)
                 .action()
                 .reg(MFF_REG2, epgVnid)
-                .reg(MFF_REG7, tunDst->to_v4().to_ulong())
-                .metadata(flow::meta::out::REMOTE_TUNNEL, flow::meta::out::MASK)
+                .reg(MFF_REG7, outReg)
+                .metadata(meta, flow::meta::out::MASK)
                 .go(POL_TABLE_ID)
                 .parent().build(elRouteDst);
 
@@ -1197,6 +1337,115 @@ void IntFlowManager::handleRemoteEndpointUpdate(const string& uuid) {
     switchManager.writeFlow(uuid, ROUTE_TABLE_ID, elRouteDst);
 }
 
+static void flowsEndpointPortRangeSNAT(const Snat& as,
+                                       const address& nwSrc,
+                                       uint16_t start,
+                                       uint16_t end,
+                                       uint32_t rdId,
+                                       uint16_t zoneId,
+                                       uint32_t ofPort,
+                                       FlowEntryList& elSnat) {
+    address snatIp = address::from_string(as.getSnatIP());
+    ActionBuilder fna;
+    fna.nat(snatIp, start, end, true);
+
+    FlowBuilder fsn;
+    fsn.priority(9)
+       .reg(6, rdId)
+       .ipSrc(nwSrc)
+       .action()
+       .conntrack(ActionBuilder::CT_COMMIT,
+                  static_cast<mf_field_id>(0),
+                  zoneId, 0xff, 0, fna);
+    if (as.getIfaceVlan())
+        fsn.action()
+           .pushVlan()
+           .setVlanVid(as.getIfaceVlan().get());
+    fsn.action()
+       .output(ofPort)
+       .parent().build(elSnat);
+}
+
+/**
+ * Endpoint specific SNAT flows (EP -> ext world)
+ *
+ * UN-SNAT flows are added via handleSnatUpdate
+ * by Snat Manager
+ */
+static void flowsEndpointSNAT(SnatManager& snatMgr,
+                              const Snat& as,
+                              uint32_t ofPort,
+                              uint32_t rdId,
+                              uint16_t zoneId,
+                              const Endpoint& endPoint,
+                              const string& uuid,
+                              FlowEntryList& elRouteDst,
+                              FlowEntryList& elSnat,
+                              uint32_t epPort,
+                              const uint8_t *epMac,
+                              FlowEntryList& elRevSnat) {
+
+    boost::system::error_code ec;
+    address nwDst;
+    uint8_t prefixlen;
+
+    for (const string& ipStr : endPoint.getIPs()) {
+        address nwSrc =
+            address::from_string(ipStr, ec);
+        if (ec) {
+            LOG(WARNING) << "Invalid endpoint IP: "
+                         << ipStr << ": " << ec.message();
+            continue;
+        }
+
+        // Program route table flow to forward to snat table
+        FlowBuilder frd;
+        frd.priority(300)
+           .reg(6, rdId)
+           .ipSrc(nwSrc);
+        if (as.getDest()) {
+            nwDst =
+                address::from_string(as.getDest().get(), ec);
+            if (ec) {
+                LOG(WARNING) << "Invalid SNAT destination: "
+                             << as.getDest().get()
+                             << ": " << ec.message();
+            } else {
+                if (as.getDestPrefix())
+                    prefixlen = as.getDestPrefix().get();
+                if (prefixlen == 0)
+                    prefixlen = 32;
+                frd.ipDst(nwDst, prefixlen);
+            }
+        }
+        frd.action()
+          .go(IntFlowManager::SNAT_TABLE_ID)
+          .parent().build(elRouteDst);
+
+        // Program snat table flow to snat and output
+        boost::optional<Snat::PortRanges> prs = as.getPortRanges("local");
+        if (prs != boost::none && prs.get().size() > 0) {
+            for (const auto& pr : prs.get()) {
+                flowsEndpointPortRangeSNAT(as, nwSrc, pr.start, pr.end,
+                                           rdId, zoneId, ofPort, elSnat);
+            }
+        }
+
+        // Program reverse flows to reach this endpoint
+        FlowBuilder()
+            .priority(10)
+            .ipDst(nwSrc)
+            .conntrackState(FlowBuilder::CT_TRACKED |
+                            FlowBuilder::CT_ESTABLISHED,
+                            FlowBuilder::CT_TRACKED |
+                            FlowBuilder::CT_ESTABLISHED |
+                            FlowBuilder::CT_INVALID |
+                            FlowBuilder::CT_NEW)
+            .action().ethDst(epMac).output(epPort)
+            .parent().build(elRevSnat);
+    }
+}
+
 void IntFlowManager::handleEndpointUpdate(const string& uuid) {
     LOG(DEBUG) << "Updating endpoint " << uuid;
 
@@ -1208,9 +1457,12 @@ void IntFlowManager::handleEndpointUpdate(const string& uuid) {
         switchManager.clearFlows(uuid, SRC_TABLE_ID);
         switchManager.clearFlows(uuid, BRIDGE_TABLE_ID);
         switchManager.clearFlows(uuid, ROUTE_TABLE_ID);
+        switchManager.clearFlows(uuid, SNAT_TABLE_ID);
+        switchManager.clearFlows(uuid, SNAT_REV_TABLE_ID);
         switchManager.clearFlows(uuid, SERVICE_DST_TABLE_ID);
         switchManager.clearFlows(uuid, OUT_TABLE_ID);
         removeEndpointFromFloodGroup(uuid);
+        agent.getSnatManager().delEndpoint(uuid);
         return;
     }
     const Endpoint& endPoint = *epWrapper.get();
@@ -1249,6 +1501,8 @@ void IntFlowManager::handleEndpointUpdate(const string& uuid) {
     FlowEntryList elSrc;
     FlowEntryList elBridgeDst;
     FlowEntryList elRouteDst;
+    FlowEntryList elSnat;
+    FlowEntryList elRevSnat;
     FlowEntryList elServiceMap;
     FlowEntryList elOutput;
 
@@ -1318,6 +1572,56 @@ void IntFlowManager::handleEndpointUpdate(const string& uuid) {
                     .output(OFPP_IN_PORT)
                     .parent().build(elPortSec);
         }
+        uint16_t zoneId = ctZoneManager.getId("veth_host_ac");
+        // Allow traffic from pod to external ip
+        // This traffic will go back to access bridge
+        // then to outside world via veth_host_ac
+        FlowBuilder()
+            .priority(15)
+            .ethType(eth::type::IP)
+            .metadata(flow::meta::out::HOST_ACCESS,
+                      flow::meta::out::MASK)
+            .action()
+                .ethSrc(getRouterMacAddr())
+                .ethDst(macAddr)
+                .decTtl()
+                .conntrack(ActionBuilder::CT_COMMIT,
+                           static_cast<mf_field_id>(0),
+                           zoneId, 0xff)
+                .output(ofPort)
+                .parent().build(elOutput);
+
+        // Add low priority rule in route table
+        // that would allow traffic to any external
+        // destination. This rule will only get hit
+        // if there is no higher priority rule
+        // matching same traffic in cases where we
+        // have an external epg applying policy.
+        FlowBuilder()
+            .priority(20)
+            .ethType(eth::type::IP)
+            .reg(6, rdId)
+            .ethDst(getRouterMacAddr())
+            .action()
+                .regMove(MFF_REG0, MFF_REG2)
+                .metadata(flow::meta::out::HOST_ACCESS,
+                          flow::meta::out::MASK)
+                .go(POL_TABLE_ID)
+                .parent().build(elRouteDst);
+
+        // Allow reverse traffic from external ips
+        // to reach the pod. iptables conntrack
+        // rules ensure only related or established
+        // traffic is sent to us. We check it as
+        // well. prio > 25 = drop priority
+        FlowBuilder()
+            .priority(26)
+                .ethType(eth::type::IP)
+                .inPort(ofPort)
+                .ethSrc(macAddr)
+                .action()
+                    .go(SRC_TABLE_ID)
+                    .parent().build(elPortSec);
     }
 
     if (hasForwardingInfo) {
@@ -1448,6 +1752,35 @@ void IntFlowManager::handleEndpointUpdate(const string& uuid) {
                              mappedIp, floatingIp, nextHop,
                              nextHopMacp);
                 }
+
+                const optional<string>& snatIp = endPoint.getSnatIP();
+                // we need endpoint macaddr to send return packet back
+                if (snatIp && hasMac) {
+                    // Inform snat manager of our interest in this snat-ip
+                    agent.getSnatManager().addEndpoint(snatIp.get(), uuid);
+                    shared_ptr<const Snat> asWrapper =
+                        agent.getSnatManager().getSnat(snatIp.get());
+                    if (asWrapper && asWrapper->isLocal() &&
+                        asWrapper->getSnatIP() == snatIp.get()) {
+                        const Snat& as = *asWrapper;
+                        uint16_t zoneId;
+                        uint32_t snatPort = OFPP_NONE;
+
+                        if (as.getZone())
+                            zoneId = as.getZone().get();
+                        if (zoneId == 0)
+                            zoneId = ctZoneManager.getId(as.getUUID());
+                        snatPort = switchManager.getPortMapper()
+                            .FindPort(as.getInterfaceName());
+                        if (snatPort != OFPP_NONE) {
+                            flowsEndpointSNAT(agent.getSnatManager(),
+                                              as, snatPort, rdId, zoneId,
+                                              endPoint, uuid,
+                                              elRouteDst, elSnat, ofPort,
+                                              macAddr, elRevSnat);
+                        }
+                    }
+                }
             }
 
             // When traffic returns from a service interface, we have a
@@ -1515,6 +1848,8 @@ void IntFlowManager::handleEndpointUpdate(const string& uuid) {
     switchManager.writeFlow(uuid, SRC_TABLE_ID, elSrc);
     switchManager.writeFlow(uuid, BRIDGE_TABLE_ID, elBridgeDst);
     switchManager.writeFlow(uuid, ROUTE_TABLE_ID, elRouteDst);
+    switchManager.writeFlow(uuid, SNAT_TABLE_ID, elSnat);
+    switchManager.writeFlow(uuid, SNAT_REV_TABLE_ID, elRevSnat);
     switchManager.writeFlow(uuid, SERVICE_DST_TABLE_ID, elServiceMap);
     switchManager.writeFlow(uuid, OUT_TABLE_ID, elOutput);
 
@@ -2009,8 +2344,117 @@ handleLearningBridgeVlanUpdate(LearningBridgeIface::vlan_range_t vlan) {
                             LEARN_TABLE_ID, learnFlows);
 }
 
+void IntFlowManager::handleSnatUpdate(const string& snatIp,
+                                      const string& snatUuid) {
+    LOG(DEBUG) << "Updating snat " << snatIp
+               << " uuid " << snatUuid;
+
+    SnatManager& snatMgr = agent.getSnatManager();
+    unordered_set<string> uuids;
+
+    snatMgr.getEndpoints(snatIp, uuids);
+    for (const string& uuid : uuids) {
+         LOG(DEBUG) << "Updating endpoint " << uuid;
+         endpointUpdated(uuid);
+    }
+
+    shared_ptr<const Snat> asWrapper = snatMgr.getSnat(snatIp);
+    if (!asWrapper || asWrapper->getSnatIP() != snatIp) {
+        LOG(DEBUG) << "Clearing snat for " << snatIp
+                   << " uuid " << snatUuid;
+        switchManager.clearFlows(snatUuid, SEC_TABLE_ID);
+        switchManager.clearFlows(snatUuid, SNAT_REV_TABLE_ID);
+        return;
+    }
+
+    const Snat& as = *asWrapper;
+    LOG(DEBUG) << as;
+
+    FlowEntryList toSnatFlows;
+    FlowEntryList snatFlows;
+    uint16_t zoneId;
+    boost::system::error_code ec;
+    address addr = address::from_string(snatIp, ec);
+    if (ec) return;
+    uint32_t snatPort = switchManager.getPortMapper()
+                                     .FindPort(as.getInterfaceName());
+    if (snatPort == OFPP_NONE) return;
+    if (as.getZone())
+        zoneId = as.getZone().get();
+    if (zoneId == 0)
+        zoneId = ctZoneManager.getId(as.getUUID());
+    vector<uint8_t> protoVec;
+    protoVec.push_back(6);
+    protoVec.push_back(17);
+    uint8_t dmac[6];
+
+    /**
+     * Either redirect to snat rev table for local snat processing or
+     * rewrite destination macaddr and bounce it out same interface
+     */
+    Snat::PortRangeMap portRangeMap = as.getPortRangeMap();
+    for (auto it : portRangeMap) {
+        bool local = false;
+        if (it.first == "local") {
+            local = true;
+        } else {
+            try {
+                MAC(it.first).toUIntArray(dmac);
+            } catch (std::invalid_argument&) {
+                LOG(ERROR) << "Invalid destination mac for snat: " << it.first;
+                continue;
+            }
+        }
+        boost::optional<Snat::PortRanges> prs = it.second;
+        if (prs != boost::none && prs.get().size() > 0) {
+            for (const auto& pr : prs.get()) {
+                MaskList snatMasks;
+                RangeMask::getMasks(pr.start, pr.end, snatMasks);
+                for (const Mask& m : snatMasks) {
+                    for (auto protocol : protoVec) {
+                        FlowBuilder maskedFlow;
+                        if (local)
+                            maskedFlow.priority(200);
+                        else
+                            maskedFlow.priority(199);
+                        maskedFlow.inPort(snatPort)
+                                  .ipDst(addr)
+                                  .proto(protocol)
+                                  .tpDst(m.first, m.second);
+                        if (as.getIfaceVlan())
+                            maskedFlow.vlan(as.getIfaceVlan().get());
+                        if (local) {
+                            if (as.getIfaceVlan())
+                                maskedFlow.action().popVlan();
+                            maskedFlow.action().go(SNAT_REV_TABLE_ID);
+                        } else {
+                            maskedFlow.action().ethDst(dmac)
+                                               .output(OFPP_IN_PORT);
+                        }
+                        maskedFlow.build(toSnatFlows);
+                    }
+                }
+            }
+        }
+    }
+
+    ActionBuilder fna;
+    fna.unnat();
+    FlowBuilder()
+        .priority(10)
+        .ethType(eth::type::IP)
+        .conntrackState(0, FlowBuilder::CT_TRACKED)
+        .action()
+            .conntrack(0, static_cast<mf_field_id>(0),
+                       zoneId, SNAT_REV_TABLE_ID, 0, fna)
+        .parent().build(snatFlows);
+
+    switchManager.writeFlow(snatUuid, SEC_TABLE_ID, toSnatFlows);
+    switchManager.writeFlow(snatUuid, SNAT_REV_TABLE_ID, snatFlows);
+}
+
 void IntFlowManager::updateEPGFlood(const URI& epgURI, uint32_t epgVnid,
-                                    uint32_t fgrpId, address epgTunDst) {
+                                    uint32_t fgrpId, const address& epgTunDst) {
     uint8_t bcastFloodMode = BcastFloodModeEnumT::CONST_NORMAL;
     optional<shared_ptr<FloodDomain> > fd =
         agent.getPolicyManager().getFDForGroup(epgURI);
@@ -2060,9 +2504,15 @@ void IntFlowManager::createStaticFlows() {
         {
             // Drop IP traffic that doesn't have the correct source
             // address
-            FlowBuilder().priority(25).ethType(eth::type::ARP).build(portSec);
-            FlowBuilder().priority(25).ethType(eth::type::IP).build(portSec);
-            FlowBuilder().priority(25).ethType(eth::type::IPV6).build(portSec);
+            FlowBuilder().priority(25).ethType(eth::type::ARP)
+                    .action().dropLog(SEC_TABLE_ID)
+                    .go(EXP_DROP_TABLE_ID).parent().build(portSec);
+            FlowBuilder().priority(25).ethType(eth::type::IP)
+                    .action().dropLog(SEC_TABLE_ID)
+                    .go(EXP_DROP_TABLE_ID).parent().build(portSec);
+            FlowBuilder().priority(25).ethType(eth::type::IPV6)
+                    .action().dropLog(SEC_TABLE_ID)
+                    .go(EXP_DROP_TABLE_ID).parent().build(portSec);
         }
         {
             // Allow DHCP requests but not replies
@@ -2198,6 +2648,35 @@ void IntFlowManager::createStaticFlows() {
         }
 
         switchManager.writeFlow("static", OUT_TABLE_ID, outFlows);
+    }
+    {
+        FlowEntryList dropLogFlows;
+        FlowBuilder().priority(0)
+                .action().go(IntFlowManager::SEC_TABLE_ID)
+                .parent().build(dropLogFlows);
+        switchManager.writeFlow("DropLogStatic", DROP_LOG_TABLE_ID, dropLogFlows);
+        /*Insert a flow at the end of every table to match dropped packets
+         *and punt to the given drop log port
+         */
+        FlowEntryList catchDropFlows;
+        if(!dropLogIface.empty() && dropLogDst.is_v4()) {
+            for(unsigned table_id = SEC_TABLE_ID; table_id < EXP_DROP_TABLE_ID; table_id++) {
+                FlowEntryList dropLogFlow;
+                FlowBuilder().priority(0)
+                        .metadata(flow::meta::DROP_LOG, flow::meta::DROP_LOG)
+                        .action().dropLog(table_id)
+                        .reg(MFF_TUN_DST, dropLogDst.to_v4().to_ulong())
+                        .output((switchManager.getPortMapper().FindPort(dropLogIface)))
+                        .parent().build(dropLogFlow);
+                switchManager.writeFlow("DropLogStatic", table_id, dropLogFlow);
+            }
+            FlowBuilder().priority(0)
+                    .metadata(flow::meta::DROP_LOG, flow::meta::DROP_LOG)
+                    .action().reg(MFF_TUN_DST, dropLogDst.to_v4().to_ulong())
+                    .output((switchManager.getPortMapper().FindPort(dropLogIface)))
+                    .parent().build(catchDropFlows);
+            switchManager.writeFlow("DropLogStatic", EXP_DROP_TABLE_ID, catchDropFlows);
+        }
     }
 }
 
@@ -2456,12 +2935,15 @@ void IntFlowManager::updateGroupSubnets(const URI& egURI, uint32_t bdId,
 void IntFlowManager::handleRoutingDomainUpdate(const URI& rdURI) {
     optional<shared_ptr<RoutingDomain > > rd =
         RoutingDomain::resolve(agent.getFramework(), rdURI);
+    // Avoding clash with dropLog flow objId, giving new name
+    const string& rdEnfPrefURIId = "EnfPref:" + rdURI.toString();
 
     if (!rd) {
         LOG(DEBUG) << "Cleaning up for RD: " << rdURI;
         switchManager.clearFlows(rdURI.toString(), NAT_IN_TABLE_ID);
         switchManager.clearFlows(rdURI.toString(), ROUTE_TABLE_ID);
         switchManager.clearFlows(rdURI.toString(), POL_TABLE_ID);
+        switchManager.clearFlows(rdEnfPrefURIId, POL_TABLE_ID);
         idGen.erase(getIdNamespace(RoutingDomain::CLASS_ID), rdURI.toString());
         ctZoneManager.erase(rdURI.toString());
         return;
@@ -2473,6 +2955,32 @@ void IntFlowManager::handleRoutingDomainUpdate(const URI& rdURI) {
     boost::system::error_code ec;
     uint32_t tunPort = getTunnelPort();
     uint32_t rdId = getId(RoutingDomain::CLASS_ID, rdURI);
+
+    /* VRF unenforced mode:
+     * In this mode, inter epg communication is allowed without any
+     * contracts. This is achieved by installing a flow entry on top
+     * of existing policy entries for this rtId.
+     * Note: As a design choice we still allow the contracts within
+     * this VRF to be  downloaded and installed in OVS. This will
+     * ensure that contracts dont have to be pulled when this VRF
+     * becomes enforced */
+    uint8_t enforcementPreference =
+                    rd.get()->isEnforcementPreferenceSet()?
+                    rd.get()->getEnforcementPreference().get():
+                    EnforcementPreferenceTypeEnumT::CONST_ENFORCED;
+    if (enforcementPreference
+            == EnforcementPreferenceTypeEnumT::CONST_UNENFORCED) {
+        LOG(DEBUG) << "Create unenforced flow for RD: " << rdURI;
+        FlowBuilder unenforcedFlow;
+        unenforcedFlow.priority(PolicyManager::MAX_POLICY_RULE_PRIORITY + 250);
+        unenforcedFlow.action().go(IntFlowManager::OUT_TABLE_ID);
+        flowutils::match_rdId(unenforcedFlow, rdId);
+        switchManager.writeFlow(rdEnfPrefURIId, POL_TABLE_ID, unenforcedFlow);
+    } else {
+        // Enforced case
+        LOG(DEBUG) << "Remove unenforced flow for RD: " << rdURI;
+        switchManager.clearFlows(rdEnfPrefURIId, POL_TABLE_ID);
+    }
 
     // For subnets internal to a routing domain, we want to perform
     // ordinary routing without mapping to external network.  These
@@ -2513,6 +3021,9 @@ void IntFlowManager::handleRoutingDomainUpdate(const URI& rdURI) {
         matchSubnet(snr, rdId, 300, addr, sn.second, false);
         if (tunPort != OFPP_NONE && encapType != ENCAP_NONE) {
             actionOutputToEPGTunnel(snr);
+        } else {
+            snr.action().dropLog(ROUTE_TABLE_ID)
+                    .go(EXP_DROP_TABLE_ID);
         }
         snr.build(rdRouteFlows);
     }
@@ -2568,6 +3079,9 @@ void IntFlowManager::handleRoutingDomainUpdate(const URI& rdURI) {
                                encapType != ENCAP_NONE) {
                         // For other external networks, output to the tunnel
                         actionOutputToEPGTunnel(snr);
+                    } else {
+                        snr.action().dropLog(ROUTE_TABLE_ID)
+                                .go(EXP_DROP_TABLE_ID);
                     }
                     // else drop the packets
                     snr.build(rdRouteFlows);
@@ -2611,7 +3125,9 @@ void IntFlowManager::handleRoutingDomainUpdate(const URI& rdURI) {
     // routingDomain and summed up for all the routingDomain to
     // calculate per tenant drop counter.
     switchManager.writeFlow(rdURI.toString(), POL_TABLE_ID,
-             FlowBuilder().priority(1).reg(6, rdId));
+             FlowBuilder().priority(1).reg(6, rdId).action()
+             .dropLog(POL_TABLE_ID)
+             .go(EXP_DROP_TABLE_ID).parent());
 }
 
 void
@@ -2984,6 +3500,14 @@ void IntFlowManager::handlePortStatusUpdate(const string& portName,
                 for (auto& r : ranges) {
                     lbVlanUpdated(r);
                 }
+            }
+        }
+        {
+            SnatManager::snats_t snats;
+            agent.getSnatManager()
+                .getSnatsByIface(portName, snats);
+            for (const pair<string, string>& snat : snats) {
+                snatUpdated(snat.second, snat.first);
             }
         }
     }

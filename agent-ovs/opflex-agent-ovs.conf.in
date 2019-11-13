@@ -139,10 +139,24 @@
         "filesystem": ["DEFAULT_FS_SERVICE_DIR"]
     },
 
+    // Debug config
+    "drop-log-config-sources": {
+        // Filesystem path to monitor for drop log control
+        // Default: no drop log service
+        "filesystem": ["DEFAULT_DROP_LOG_DIR"]
+    },
+
     // Dynamically loaded plugins can add new functionality to the
     // opflex agent at startup.
     "plugins": {
         "renderer": []
+    },
+
+    // OVSDB parameters for client to connect
+    "ovsdb": {
+        "ip-address": "127.0.0.1",
+        "port": "6640",
+        "bridge": "br-int"
     },
 
     // Renderers enforce policy obtained via OpFlex.

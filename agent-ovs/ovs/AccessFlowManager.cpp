@@ -123,6 +123,22 @@ void AccessFlowManager::portStatusUpdate(const string& portName,
         .dispatch([=]() { handlePortStatusUpdate(portName, portNo); });
 }
 
+void AccessFlowManager::setDropLog(const string& dropLogPort, const string& dropLogRemoteIp,
+        const uint16_t _dropLogRemotePort) {
+    dropLogIface = dropLogPort;
+    boost::system::error_code ec;
+    address tunDst = address::from_string(dropLogRemoteIp, ec);
+    if (ec) {
+        LOG(ERROR) << "Invalid drop-log tunnel destination IP: "
+                   << dropLogRemoteIp << ": " << ec.message();
+    } else if (tunDst.is_v6()) {
+        LOG(ERROR) << "IPv6 drop-log tunnel destinations are not supported";
+    } else {
+        dropLogDst = tunDst;
+    }
+    dropLogRemotePort = _dropLogRemotePort;
+}
+
 static FlowEntryPtr flowEmptySecGroup(uint32_t emptySecGrpSetId) {
     FlowBuilder noSecGrp;
     flowutils::match_group(noSecGrp,
@@ -177,6 +193,37 @@ void AccessFlowManager::createStaticFlows() {
         outFlows.push_back(flowutils::default_out_flow());
 
         switchManager.writeFlow("static", OUT_TABLE_ID, outFlows);
+    }
+
+    {
+        FlowEntryList dropLogFlows;
+        FlowBuilder().priority(0)
+                .action().go(GROUP_MAP_TABLE_ID)
+                .parent().build(dropLogFlows);
+        switchManager.writeFlow("static", DROP_LOG_TABLE_ID, dropLogFlows);
+        /*Insert a flow at the end of every table to match dropped packets
+         *and punt to the given drop log port
+         */
+        FlowEntryList catchDropFlows;
+        if(!dropLogIface.empty() && dropLogDst.is_v4()) {
+            for(unsigned table_id = GROUP_MAP_TABLE_ID; table_id < EXP_DROP_TABLE_ID; table_id++) {
+                FlowEntryList dropLogFlow;
+                FlowBuilder().priority(0)
+                        .metadata(flow::meta::DROP_LOG, flow::meta::DROP_LOG)
+                        .action().dropLog(table_id)
+                        .reg(MFF_TUN_DST, dropLogDst.to_v4().to_ulong())
+                        .go(switchManager.getPortMapper().FindPort(dropLogIface))
+                        .parent().build(dropLogFlow);
+                switchManager.writeFlow("DropLogFlow", table_id, dropLogFlow);
+            }
+            FlowBuilder().priority(0)
+                    .metadata(flow::meta::DROP_LOG, flow::meta::DROP_LOG)
+                    .action()
+                    .reg(MFF_TUN_DST, dropLogDst.to_v4().to_ulong())
+                    .output((switchManager.getPortMapper().FindPort(dropLogIface)))
+                    .parent().build(catchDropFlows);
+            switchManager.writeFlow("static", EXP_DROP_TABLE_ID, catchDropFlows);
+        }
     }
 
     // everything is allowed for endpoints with no security group set
@@ -336,9 +383,12 @@ void AccessFlowManager::handleSecGrpSetUpdate(const uri_set_t& secGrps,
     using modelgbp::gbp::DirectionEnumT;
     using modelgbp::gbp::ConnTrackEnumT;
     using flowutils::CA_REFLEX_REV_ALLOW;
-    using flowutils::CA_REFLEX_REV;
+    using flowutils::CA_REFLEX_REV_TRACK;
     using flowutils::CA_REFLEX_FWD;
     using flowutils::CA_ALLOW;
+    using flowutils::CA_REFLEX_FWD_TRACK;
+    using flowutils::CA_REFLEX_FWD_EST;
+    using flowutils::CA_REFLEX_REV_RELATED;
 
     LOG(DEBUG) << "Updating security group set \"" << secGrpsIdStr << "\"";
 
@@ -389,8 +439,26 @@ void AccessFlowManager::handleSecGrpSetUpdate(const uri_set_t& secGrps,
                                                   secGrpSetId, 0,
                                                   secGrpIn);
                 if (act == CA_REFLEX_FWD) {
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_FWD_TRACK,
+                                                      remoteSubs,
+                                                      boost::none,
+                                                      GROUP_MAP_TABLE_ID,
+                                                      pc->getPriority(),
+                                                      OFPUTIL_FF_SEND_FLOW_REM,
+                                                      secGrpCookie,
+                                                      secGrpSetId, 0,
+                                                      secGrpIn);
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_FWD_EST,
+                                                      remoteSubs,
+                                                      boost::none,
+                                                      OUT_TABLE_ID,
+                                                      pc->getPriority(),
+                                                      OFPUTIL_FF_SEND_FLOW_REM,
+                                                      secGrpCookie,
+                                                      secGrpSetId, 0,
+                                                      secGrpIn);
                     // add reverse entries for reflexive classifier
-                    flowutils::add_classifier_entries(*cls, CA_REFLEX_REV,
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_REV_TRACK,
                                                       boost::none,
                                                       remoteSubs,
                                                       GROUP_MAP_TABLE_ID,
@@ -400,6 +468,15 @@ void AccessFlowManager::handleSecGrpSetUpdate(const uri_set_t& secGrps,
                                                       secGrpSetId, 0,
                                                       secGrpOut);
                     flowutils::add_classifier_entries(*cls, CA_REFLEX_REV_ALLOW,
+                                                      boost::none,
+                                                      remoteSubs,
+                                                      OUT_TABLE_ID,
+                                                      pc->getPriority(),
+                                                      OFPUTIL_FF_SEND_FLOW_REM,
+                                                      secGrpCookie,
+                                                      secGrpSetId, 0,
+                                                      secGrpOut);
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_REV_RELATED,
                                                       boost::none,
                                                       remoteSubs,
                                                       OUT_TABLE_ID,
@@ -422,8 +499,26 @@ void AccessFlowManager::handleSecGrpSetUpdate(const uri_set_t& secGrps,
                                                   secGrpSetId, 0,
                                                   secGrpOut);
                 if (act == CA_REFLEX_FWD) {
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_FWD_TRACK,
+                                                      boost::none,
+                                                      remoteSubs,
+                                                      GROUP_MAP_TABLE_ID,
+                                                      pc->getPriority(),
+                                                      OFPUTIL_FF_SEND_FLOW_REM,
+                                                      secGrpCookie,
+                                                      secGrpSetId, 0,
+                                                      secGrpOut);
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_FWD_EST,
+                                                      boost::none,
+                                                      remoteSubs,
+                                                      OUT_TABLE_ID,
+                                                      pc->getPriority(),
+                                                      OFPUTIL_FF_SEND_FLOW_REM,
+                                                      secGrpCookie,
+                                                      secGrpSetId, 0,
+                                                      secGrpOut);
                     // add reverse entries for reflexive classifier
-                    flowutils::add_classifier_entries(*cls, CA_REFLEX_REV,
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_REV_TRACK,
                                                       remoteSubs,
                                                       boost::none,
                                                       GROUP_MAP_TABLE_ID,
@@ -433,6 +528,15 @@ void AccessFlowManager::handleSecGrpSetUpdate(const uri_set_t& secGrps,
                                                       secGrpSetId, 0,
                                                       secGrpIn);
                     flowutils::add_classifier_entries(*cls, CA_REFLEX_REV_ALLOW,
+                                                      remoteSubs,
+                                                      boost::none,
+                                                      OUT_TABLE_ID,
+                                                      pc->getPriority(),
+                                                      OFPUTIL_FF_SEND_FLOW_REM,
+                                                      secGrpCookie,
+                                                      secGrpSetId, 0,
+                                                      secGrpIn);
+                    flowutils::add_classifier_entries(*cls, CA_REFLEX_REV_RELATED,
                                                       remoteSubs,
                                                       boost::none,
                                                       OUT_TABLE_ID,
@@ -468,6 +572,102 @@ void AccessFlowManager::lbIfaceUpdated(const std::string& uuid) {
             endpointUpdated(uuid);
         }
     }
+}
+
+void AccessFlowManager::rdConfigUpdated(const opflex::modb::URI& rdURI) {
+//Interface not used
+}
+
+void AccessFlowManager::packetDropLogConfigUpdated(const opflex::modb::URI& dropLogCfgURI) {
+    using modelgbp::observer::DropLogConfig;
+    using modelgbp::observer::DropLogModeEnumT;
+    FlowEntryList dropLogFlows;
+    optional<shared_ptr<DropLogConfig>> dropLogCfg =
+            DropLogConfig::resolve(agent.getFramework(), dropLogCfgURI);
+    if(!dropLogCfg) {
+        FlowBuilder().priority(2)
+                .action().go(GROUP_MAP_TABLE_ID)
+                .parent().build(dropLogFlows);
+        switchManager.writeFlow("DropLogConfig", DROP_LOG_TABLE_ID, dropLogFlows);
+        return;
+    }
+    if(dropLogCfg.get()->getDropLogEnable(0) != 0) {
+        if(dropLogCfg.get()->getDropLogMode(
+                    DropLogModeEnumT::CONST_UNFILTERED_DROP_LOG) ==
+           DropLogModeEnumT::CONST_UNFILTERED_DROP_LOG) {
+            FlowBuilder().priority(2)
+                    .action()
+                    .metadata(flow::meta::DROP_LOG,
+                              flow::meta::DROP_LOG)
+                    .go(GROUP_MAP_TABLE_ID)
+                    .parent().build(dropLogFlows);
+        } else {
+            switchManager.clearFlows("DropLogConfig", DROP_LOG_TABLE_ID);
+            return;
+        }
+    } else {
+        FlowBuilder().priority(2)
+                .action()
+                .go(GROUP_MAP_TABLE_ID)
+                .parent().build(dropLogFlows);
+    }
+    switchManager.writeFlow("DropLogConfig", DROP_LOG_TABLE_ID, dropLogFlows);
+}
+
+void AccessFlowManager::packetDropFlowConfigUpdated(const opflex::modb::URI& dropFlowCfgURI) {
+    using modelgbp::observer::DropFlowConfig;
+    optional<shared_ptr<DropFlowConfig>> dropFlowCfg =
+            DropFlowConfig::resolve(agent.getFramework(), dropFlowCfgURI);
+    if(!dropFlowCfg) {
+        switchManager.clearFlows(dropFlowCfgURI.toString(), DROP_LOG_TABLE_ID);
+        return;
+    }
+    FlowEntryList dropLogFlows;
+    FlowBuilder fb;
+    fb.priority(1);
+    if(dropFlowCfg.get()->isEthTypeSet()) {
+        fb.ethType(dropFlowCfg.get()->getEthType(0));
+    }
+    if(dropFlowCfg.get()->isInnerSrcAddressSet()) {
+        const std::string &innerSrc =
+                dropFlowCfg.get()->getInnerSrcAddress("");
+        address addr = address::from_string(innerSrc);
+        fb.ipSrc(addr);
+    }
+    if(dropFlowCfg.get()->isInnerDstAddressSet()) {
+        const std::string &innerDst =
+                dropFlowCfg.get()->getInnerDstAddress("");
+        address addr = address::from_string(innerDst);
+        fb.ipDst(addr);
+    }
+    if(dropFlowCfg.get()->isOuterSrcAddressSet()) {
+        const std::string &outerSrc =
+                dropFlowCfg.get()->getOuterSrcAddress("");
+        address addr = address::from_string(outerSrc);
+        fb.outerIpSrc(addr);
+    }
+    if(dropFlowCfg.get()->isOuterDstAddressSet()) {
+        const std::string &outerDst =
+                dropFlowCfg.get()->getOuterSrcAddress("");
+        address addr = address::from_string(outerDst);
+        fb.outerIpDst(addr);
+    }
+    if(dropFlowCfg.get()->isTunnelIdSet()) {
+        fb.tunId(dropFlowCfg.get()->getTunnelId(0));
+    }
+    if(dropFlowCfg.get()->isIpProtoSet()) {
+        fb.proto(dropFlowCfg.get()->getIpProto(0));
+    }
+    if(dropFlowCfg.get()->isSrcPortSet()) {
+        fb.tpSrc(dropFlowCfg.get()->getSrcPort(0));
+    }
+    if(dropFlowCfg.get()->isDstPortSet()) {
+        fb.tpDst(dropFlowCfg.get()->getDstPort(0));
+    }
+    fb.action().metadata(flow::meta::DROP_LOG, flow::meta::DROP_LOG)
+            .go(GROUP_MAP_TABLE_ID).parent().build(dropLogFlows);
+    switchManager.writeFlow(dropFlowCfgURI.toString(), DROP_LOG_TABLE_ID,
+            dropLogFlows);
 }
 
 static bool secGrpSetIdGarbageCb(EndpointManager& endpointManager,

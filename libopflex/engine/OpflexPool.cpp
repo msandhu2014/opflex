@@ -274,6 +274,13 @@ void OpflexPool::doRemovePeer(const std::string& hostname, int port) {
     }
 }
 
+void OpflexPool::resetAllPeers() {
+    util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
+    BOOST_FOREACH(conn_map_t::value_type& v, connections) {
+        v.second.conn->close();
+    }
+}
+
 // must be called with conn_mutex held
 void OpflexPool::updateRole(ConnData& cd,
                             uint8_t newroles,
@@ -314,6 +321,7 @@ void OpflexPool::setRoles(OpflexClientConnection* conn,
     ConnData& cd = connections.at(make_pair(conn->getHostname(),
                                             conn->getPort()));
     doSetRoles(cd, newroles);
+    cd.conn->setRoles(newroles);
 }
 
 // must be called with conn_mutex held
@@ -401,17 +409,21 @@ size_t OpflexPool::sendToRole(OpflexMessage* message,
     return i;
 }
 
-void OpflexPool::validatePeerSet(const peer_name_set_t& peers) {
+void OpflexPool::validatePeerSet(OpflexClientConnection * conn, const peer_name_set_t& peers) {
     peer_name_set_t to_remove;
     util::RecursiveLockGuard guard(&conn_mutex, &conn_mutex_key);
 
     BOOST_FOREACH(const conn_map_t::value_type& cv, connections) {
         OpflexClientConnection* c = cv.second.conn;
+        OpflexClientConnection* srcPeer = getPeer(conn->getHostname(), conn->getPort());
         peer_name_t peer_name = make_pair(c->getHostname(), c->getPort());
-        if (peers.find(peer_name) == peers.end() &&
-            configured_peers.find(peer_name) == configured_peers.end()) {
+        if ((peers.find(peer_name) == peers.end()) &&
+            (configured_peers.find(peer_name) == configured_peers.end()) &&
+            ((srcPeer->getRoles()==0) || (getClientMode() != AgentMode::TRANSPORT_MODE))) {
             LOG(INFO) << "Removing stale peer connection: "
-                      << peer_name.first << ":" << peer_name.second;
+                      << peer_name.first << ":" << peer_name.second
+                      << " based on peer-list from "
+                      << srcPeer->getHostname() << ":" << srcPeer->getPort();
             c->close();
         }
     }

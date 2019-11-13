@@ -15,6 +15,7 @@
 #include <opflexagent/IdGenerator.h>
 #include "ActionBuilder.h"
 #include "AdvertManager.h"
+#include <opflexagent/TunnelEpManager.h>
 #include <opflexagent/RDConfig.h>
 #include <opflexagent/TaskQueue.h>
 #include "SwitchStateHandler.h"
@@ -47,6 +48,7 @@ class IntFlowManager : public SwitchStateHandler,
                        public LearningBridgeListener,
                        public PolicyListener,
                        public PortStatusListener,
+                       public SnatListener,
                        public opflex::ofcore::PeerStatusListener,
                        private boost::noncopyable {
 public:
@@ -62,7 +64,8 @@ public:
                    SwitchManager& switchManager,
                    IdGenerator& idGen,
                    CtZoneManager& ctZoneManager,
-                   PacketInHandler& pktInHandler);
+                   PacketInHandler& pktInHandler,
+                   TunnelEpManager& tnlEpManager);
     ~IntFlowManager() {}
 
     /**
@@ -184,8 +187,12 @@ public:
      * Enable or disable endpoint advertisements and set the mode
      *
      * @param mode the endpoint advertisement mode
+     * @param tunnelMode the tunnel endpoint advertisement mode
+     * @param tunnelAdvIntvl the tunnel endpoint advertisement interval
      */
-    void setEndpointAdv(AdvertManager::EndpointAdvMode mode);
+    void setEndpointAdv(AdvertManager::EndpointAdvMode mode,
+            AdvertManager::EndpointAdvMode tunnelMode,
+            uint64_t tunnelAdvIntvl=600);
 
     /**
      * Set the multicast group file
@@ -193,6 +200,15 @@ public:
      * subscriptions will be written
      */
     void setMulticastGroupFile(const std::string& mcastGroupFile);
+
+    /**
+     * Set the drop log parameters
+     * @param dropLogPort port name for the drop-log port
+     * @param dropLogRemoteIp outer ip address for the drop-log geneve tunnel
+     * @param dropLogRemotePort port number for geneve encap
+     */
+    void setDropLog(const string& dropLogPort, const string& dropLogRemoteIp,
+            const uint16_t dropLogRemotePort);
 
     /**
      * Get the openflow port that maps to the configured tunnel
@@ -248,6 +264,8 @@ public:
 
     /* Interface: ExtraConfigListener */
     virtual void rdConfigUpdated(const opflex::modb::URI& rdURI);
+    virtual void packetDropLogConfigUpdated(const opflex::modb::URI& dropLogCfgURI);
+    virtual void packetDropFlowConfigUpdated(const opflex::modb::URI& dropFlowCfgURI);
 
     /* Interface: LearningBridgeListener */
     virtual void lbIfaceUpdated(const std::string& uuid);
@@ -263,6 +281,10 @@ public:
     /* Interface: PortStatusListener */
     virtual void portStatusUpdate(const std::string& portName, uint32_t portNo,
                                   bool fromDesc);
+
+    /* Interface: SnatListener */
+    virtual void snatUpdated(const std::string& snatIp,
+                             const std::string& uuid);
 
     /**
      * Run periodic cleanup tasks
@@ -329,6 +351,10 @@ public:
      */
     enum {
         /**
+         * Handles drop log policy
+         */
+        DROP_LOG_TABLE_ID,
+        /**
          * Handles port security/ingress policy
          */
         SEC_TABLE_ID,
@@ -337,6 +363,13 @@ public:
          * mapping into registers for use by later tables
          */
         SRC_TABLE_ID,
+        /**
+         * External World to SNAT IP
+         * UN-SNAT traffic using connection tracking. Changes
+         * network destination using state in connection
+         * tracker and forwards traffic to the endpoint.
+         */
+        SNAT_REV_TABLE_ID,
         /**
          * For traffic returning from load-balanced service IP
          * addresses, restore the source address to the service
@@ -364,6 +397,14 @@ public:
          */
         ROUTE_TABLE_ID,
         /**
+         * Endpoint -> External World
+         * Traffic that needs SNAT is determined after routing
+         * local traffic. SNAT changes the source ip address and
+         * source port based on configuration in the endpoint
+         * file.
+         */
+        SNAT_TABLE_ID,
+        /**
          * For flows destined for a NAT IP address, determine the
          * source external network for the mapped IP address and set
          * this in the source registers to allow applying policy to
@@ -389,11 +430,18 @@ public:
          * metadata field.
          */
         OUT_TABLE_ID,
+        /*
+         * Handle explicitly dropped packets here based on the
+         * drop-log config
+         */
+        EXP_DROP_TABLE_ID,
         /**
          * The total number of flow tables
          */
         NUM_FLOW_TABLES
     };
+
+    TunnelEpManager& tunnelEpManager;
 
 private:
     /**
@@ -490,6 +538,15 @@ private:
      */
     void handlePortStatusUpdate(const std::string& portName, uint32_t portNo);
 
+    /**
+     * Create / Update SNAT flows due to SNAT update
+     *
+     * @param snatIp the snat ip affected
+     * @param snatUuid the snat uuid for the snat object
+     */
+    void handleSnatUpdate(const std::string& snatIp,
+                          const std::string& snatUuid);
+
     bool getGroupForwardingInfo(const opflex::modb::URI& egUri, uint32_t& vnid,
             boost::optional<opflex::modb::URI>& rdURI, uint32_t& rdId,
             boost::optional<opflex::modb::URI>& bdURI, uint32_t& bdId,
@@ -498,7 +555,7 @@ private:
                             uint32_t bdId, uint32_t rdId);
     void updateEPGFlood(const opflex::modb::URI& epgURI,
                         uint32_t epgVnid, uint32_t fgrpId,
-                        boost::asio::ip::address epgTunDst);
+                        const boost::asio::ip::address& epgTunDst);
 
     /**
      * Update all current group table entries
@@ -567,6 +624,9 @@ private:
     uint8_t dhcpMac[6];
     std::string flowIdCache;
     std::string mcastGroupFile;
+    std::string dropLogIface;
+    boost::asio::ip::address dropLogDst;
+    uint16_t dropLogRemotePort;
 
     /*
      * Map of flood-group URI to the endpoints associated with it.
@@ -624,6 +684,7 @@ private:
                                  const uint32_t cvnid,
                                  bool allowBidirectional,
                                  const PolicyManager::rule_list_t& rules);
+
 };
 
 } // namespace opflexagent

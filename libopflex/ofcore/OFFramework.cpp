@@ -53,6 +53,7 @@ public:
     uv_key_t mutator_key;
     bool started;
     opflex::ofcore::OFConstants::OpflexElementMode mode;
+    opflex::modb::MAC tunnelMac;
 };
 
 OFFramework::OFFramework() : pimpl(new OFFrameworkImpl()) {
@@ -88,6 +89,24 @@ bool OFFramework::setElementMode(
     } else {
         return false;
     }
+}
+
+void OFFramework::setTunnelMac(const opflex::modb::MAC &mac) {
+    if(pimpl->tunnelMac != mac) {
+        pimpl->tunnelMac = mac;
+        if(pimpl->started && (pimpl->mode ==
+           opflex::ofcore::OFConstants::OpflexElementMode::TRANSPORT_MODE)) {
+            pimpl->processor.stop();
+            pimpl->processor.setTunnelMac(mac);
+            pimpl->processor.start(pimpl->mode);
+        } else {
+            pimpl->processor.setTunnelMac(mac);
+        }
+    }
+}
+
+opflex::ofcore::OFConstants::OpflexElementMode OFFramework::getElementMode() {
+    return pimpl->mode;
 }
 
 void OFFramework::setPrrTimerDuration(const uint64_t duration) {
@@ -244,9 +263,12 @@ boost::optional<URI> OFFramework::getParent(class_id_t child_class,
     return uri;
 }
 
-OFFramework& OFFramework::defaultInstance() {
-    static OFFramework staticInstance;
-    return staticInstance;
+void OFFramework::resetAllPeers() {
+    engine::internal::OpflexPool& pool = pimpl->processor.getPool();
+    std::string location;
+    pool.setLocation(location);
+    pool.resetAllPeers();
+    pool.addConfiguredPeers();
 }
 
 void OFFramework::registerTLMutator(modb::Mutator& mutator) {

@@ -12,28 +12,6 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
-if HAVE_STATIC_BOOST
-$(info Static boost enabled)
-$(info BOOST_STATIC_LIB_DIR $(BOOST_STATIC_LIB_DIR))
-USE_BOOST_SYSTEM_LIB=$(BOOST_STATIC_LIB_DIR)/libboost_system.a
-USE_BOOST_FILESYSTEM_LIB=$(BOOST_STATIC_LIB_DIR)/libboost_filesystem.a
-USE_BOOST_PROGRAM_OPTIONS_LIB=$(BOOST_STATIC_LIB_DIR)/libboost_program_options.a
-USE_BOOST_UNIT_TEST_FRAMEWORK_LIB=$(BOOST_STATIC_LIB_DIR)/libboost_test_exec_monitor.a \
-				  $(BOOST_STATIC_LIB_DIR)/libboost_unit_test_framework.a
-USE_BOOST_IOSTREAMS_LIB=$(BOOST_STATIC_LIB_DIR)/libboost_iostreams.a
-USE_TEST_FLAGS=-DBoost_USE_STATIC_LIBS=ON
-RPM_BUILD_FLAGS=--without-dynboost
-else
-$(info Static boost disabled)
-USE_BOOST_SYSTEM_LIB=$(BOOST_SYSTEM_LIB)
-USE_BOOST_FILESYSTEM_LIB=$(BOOST_FILESYSTEM_LIB)
-USE_BOOST_ASIO_LIB=$(BOOST_ASIO_LIB)
-USE_BOOST_PROGRAM_OPTIONS_LIB=$(BOOST_PROGRAM_OPTIONS_LIB)
-USE_BOOST_UNIT_TEST_FRAMEWORK_LIB=$(BOOST_UNIT_TEST_FRAMEWORK_LIB)
-USE_BOOST_IOSTREAMS_LIB=$(BOOST_IOSTREAMS_LIB)
-USE_TEST_FLAGS=-DBOOST_TEST_DYN_LINK
-endif
-
 OVS_ADDL_CFLAGS = \
 	-D__STDC_LIMIT_MACROS \
 	-D__STDC_CONSTANT_MACROS \
@@ -58,9 +36,9 @@ libopflex_agent_la_LIBADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
 	$(libnfct_LIBS) \
-	$(USE_BOOST_SYSTEM_LIB) \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_ASIO_LIB)
+	$(BOOST_SYSTEM_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_ASIO_LIB)
 
 libopflex_agent_la_includedir = $(includedir)/opflexagent
 libopflex_agent_la_include_HEADERS = \
@@ -101,7 +79,16 @@ libopflex_agent_la_include_HEADERS = \
 	lib/include/opflexagent/cmd.h \
 	lib/include/opflexagent/logging.h \
 	lib/include/opflexagent/SimStats.h \
-	lib/include/opflexagent/SpanManager.h
+	lib/include/opflexagent/SpanSessionState.h \
+	lib/include/opflexagent/SpanListener.h \
+	lib/include/opflexagent/SpanManager.h \
+	lib/include/opflexagent/FSSnatSource.h \
+	lib/include/opflexagent/SnatManager.h \
+	lib/include/opflexagent/Snat.h \
+	lib/include/opflexagent/SnatSource.h \
+	lib/include/opflexagent/SnatListener.h \
+	lib/include/opflexagent/FSPacketDropLogConfigSource.h \
+	lib/include/opflexagent/PacketDropLogConfig.h
 
 noinst_HEADERS = \
 	ovs/include/OVSRenderer.h \
@@ -133,7 +120,9 @@ noinst_HEADERS = \
 	ovs/include/udp.h \
 	ovs/include/dhcp.h \
 	ovs/include/arp.h \
-	ovs/include/eth.h
+	ovs/include/eth.h \
+	ovs/include/SpanRenderer.h \
+	ovs/include/JsonRpc.h
 
 libopflex_agent_la_SOURCES = \
 	lib/AgentLogHandler.cpp \
@@ -168,7 +157,13 @@ libopflex_agent_la_SOURCES = \
 	lib/TaskQueue.cpp \
 	lib/Network.cpp \
 	lib/SimStats.cpp \
-	lib/SpanManager.cpp
+	lib/SpanManager.cpp \
+	lib/FSSnatSource.cpp \
+	lib/Snat.cpp \
+	lib/SnatManager.cpp \
+	lib/SnatSource.cpp \
+	lib/FSPacketDropLogConfigSource.cpp
+
 libopflex_agent_la_LDFLAGS = -shared -version-info ${VERSION_INFO}
 
 pkgconfigdir = $(libdir)/pkgconfig
@@ -201,7 +196,9 @@ if RENDERER_OVS
 	ovs/AdvertManager.cpp \
 	ovs/FlowUtils.cpp \
 	ovs/FlowConstants.cpp \
-	ovs/ovs-shim.c
+	ovs/ovs-shim.c \
+	ovs/SpanRenderer.cpp \
+	ovs/JsonRpc.cpp
   librenderer_openvswitch_la_CFLAGS = \
 	$(libopenvswitch_CFLAGS) \
 	$(libofproto_CFLAGS)
@@ -216,9 +213,9 @@ if RENDERER_OVS
 	$(libmodelgbp_LIBS) \
 	$(libopenvswitch_LIBS) \
 	$(libofproto_LIBS) \
-	$(USE_BOOST_SYSTEM_LIB) \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_ASIO_LIB)
+	$(BOOST_SYSTEM_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_ASIO_LIB)
   libopflex_agent_renderer_openvswitch_la_LIBADD = \
 	librenderer_openvswitch.la
   libopflex_agent_renderer_openvswitch_la_LDFLAGS = \
@@ -226,6 +223,9 @@ if RENDERER_OVS
 endif
 
 bin_PROGRAMS=opflex_agent gbp_inspect mcast_daemon mock_server
+if ENABLE_GRPC
+bin_PROGRAMS += gbp_client_stress
+endif
 opflex_agent_CXXFLAGS = -DSYSCONFDIR='"$(sysconfdir)"' \
 	$(libopflex_CFLAGS) \
 	$(libmodelgbp_CFLAGS)
@@ -233,9 +233,9 @@ opflex_agent_SOURCES = \
 	cmd/opflex_agent.cpp
 opflex_agent_LDADD = \
 	$(libopflex_LIBS) \
-	$(USE_BOOST_PROGRAM_OPTIONS_LIB) \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_SYSTEM_LIB) \
+	$(BOOST_PROGRAM_OPTIONS_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_SYSTEM_LIB) \
 	libopflex_agent.la
 
 gbp_inspect_CXXFLAGS = -DSYSCONFDIR='"$(sysconfdir)"'
@@ -244,18 +244,18 @@ gbp_inspect_SOURCES = \
 gbp_inspect_LDADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
-	$(USE_BOOST_IOSTREAMS_LIB) \
-	$(USE_BOOST_PROGRAM_OPTIONS_LIB) \
-	$(USE_BOOST_SYSTEM_LIB) \
+	$(BOOST_IOSTREAMS_LIB) \
+	$(BOOST_PROGRAM_OPTIONS_LIB) \
+	$(BOOST_SYSTEM_LIB) \
 	libopflex_agent.la
 
 mcast_daemon_CXXFLAGS = -DLOCALSTATEDIR='"$(localstatedir)"'
 mcast_daemon_SOURCES = \
 	cmd/mcast_daemon.cpp
 mcast_daemon_LDADD = \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_SYSTEM_LIB) \
-	$(USE_BOOST_PROGRAM_OPTIONS_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_SYSTEM_LIB) \
+	$(BOOST_PROGRAM_OPTIONS_LIB) \
 	libopflex_agent.la
 
 TESTS = agent_test
@@ -266,7 +266,7 @@ agent_test_CXXFLAGS = \
 	-I$(top_srcdir)/lib/include \
 	-I$(top_srcdir)/cmd/test/include \
 	$(libopflex_CFLAGS) $(libmodelgbp_CFLAGS) \
-	$(USE_TEST_FLAGS)
+	-DBOOST_TEST_DYN_LINK
 
 agent_test_includedir = $(includedir)/opflexagent/test
 agent_test_include_HEADERS = \
@@ -283,14 +283,15 @@ agent_test_SOURCES = \
 	lib/test/KeyedRateLimiter_test.cpp \
 	lib/test/NotifServer_test.cpp \
 	lib/test/Network_test.cpp \
+	lib/test/SpanManager_test.cpp \
 	cmd/test/agent_test.cpp
 
 agent_test_LDADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_SYSTEM_LIB) \
-	$(USE_BOOST_UNIT_TEST_FRAMEWORK_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_SYSTEM_LIB) \
+	$(BOOST_UNIT_TEST_FRAMEWORK_LIB) \
 	libopflex_agent.la
 
 if RENDERER_OVS
@@ -329,17 +330,50 @@ endif
 mock_server_CXXFLAGS = \
 	-I$(top_srcdir)/cmd/test/include \
 	$(libopflex_CFLAGS) $(libmodelgbp_CFLAGS)
+if ENABLE_GRPC
+mock_server_CXXFLAGS += $(GRPC_CFLAGS)
+endif
+
 mock_server_SOURCES = \
 	cmd/test/include/Policies.h \
 	cmd/test/Policies.cpp \
 	cmd/test/mock_server.cpp
+if ENABLE_GRPC
+%.grpc.pb.cc %.grpc.pb.h %.pb.cc %.pb.h: %.proto
+	protoc --cpp_out=. $^
+	protoc --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` $^
+mock_server_SOURCES += cmd/test/GbpClient.cpp
+BUILT_SOURCES = cmd/test/gbp.pb.cc \
+                cmd/test/gbp.grpc.pb.cc \
+                cmd/test/gbp.pb.h \
+                cmd/test/gbp.grpc.pb.h
+nodist_mock_server_SOURCES = cmd/test/gbp.pb.cc \
+                             cmd/test/gbp.grpc.pb.cc \
+                             cmd/test/gbp.pb.h \
+                             cmd/test/gbp.grpc.pb.h
+endif
+
 mock_server_LDADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
-	$(USE_BOOST_PROGRAM_OPTIONS_LIB) \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_SYSTEM_LIB) \
+	$(BOOST_PROGRAM_OPTIONS_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_SYSTEM_LIB) \
 	libopflex_agent.la
+if ENABLE_GRPC
+mock_server_LDADD += $(GRPC_LIBS) $(PROTOBUF_LIBS) -lgrpc++_reflection
+endif
+
+if ENABLE_GRPC
+gbp_client_stress_CXXFLAGS = \
+	-I$(top_srcdir)/cmd/test/include $(GRPC_CFLAGS)
+gbp_client_stress_SOURCES = cmd/test/gbp_client_stress.cpp
+nodist_gbp_client_stress_SOURCES = cmd/test/gbp.pb.cc \
+			    cmd/test/gbp.grpc.pb.cc \
+			    cmd/test/gbp.pb.h \
+			    cmd/test/gbp.grpc.pb.h
+gbp_client_stress_LDADD = $(GRPC_LIBS) $(PROTOBUF_LIBS) -lgrpc++_reflection
+endif
 
 policy_repo_stress_CXXFLAGS = \
 	$(libopflex_CFLAGS) \
@@ -348,9 +382,9 @@ policy_repo_stress_SOURCES = \
 	cmd/test/policy_repo_stress.cpp
 policy_repo_stress_LDADD = \
 	$(libopflex_LIBS) \
-	$(USE_BOOST_PROGRAM_OPTIONS_LIB) \
-	$(USE_BOOST_FILESYSTEM_LIB) \
-	$(USE_BOOST_SYSTEM_LIB) \
+	$(BOOST_PROGRAM_OPTIONS_LIB) \
+	$(BOOST_FILESYSTEM_LIB) \
+	$(BOOST_SYSTEM_LIB) \
 	libopflex_agent.la
 
 agentconfdir=$(sysconfdir)/opflex-agent-ovs
@@ -360,6 +394,7 @@ pluginconf_DATA = plugin-renderer-openvswitch.conf
 
 defepwatchdir=${localstatedir}/lib/opflex-agent-ovs/endpoints
 defservwatchdir=${localstatedir}/lib/opflex-agent-ovs/services
+defdroplogwatchdir=${localstatedir}/lib/opflex-agent-ovs/droplog
 inspectsock=${localstatedir}/run/opflex-agent-inspect.sock
 notifsock=${localstatedir}/run/opflex-agent-notif.sock
 cacertdir=${sysconfdir}/ssl/certs
@@ -371,6 +406,7 @@ opflex-agent-ovs.conf: $(top_srcdir)/opflex-agent-ovs.conf.in
 	    -e "s|DEFAULT_NOTIF_SOCKET|${notifsock}|" \
 	    -e "s|DEFAULT_CA_CERT_DIR|${cacertdir}|" \
 	    -e "s|DEFAULT_CLIENT_CERT_PATH|${clientcertpath}|" \
+	    -e "s|DEFAULT_DROP_LOG_DIR|${defdroplogwatchdir}|" \
 	$< > $@
 
 flowidcachedir=${localstatedir}/lib/opflex-agent-ovs/ids
@@ -386,7 +422,7 @@ if HAVE_DOXYGEN
 endif
 
 integration_test_CXXFLAGS = \
-	$(BOOST_CPPFLAGS) $(USE_TEST_FLAGS) \
+	$(BOOST_CPPFLAGS) -DBOOST_TEST_DYN_LINK \
 	-I$(top_srcdir)/integration-test/include
 
 integration_test_SOURCES = \
@@ -395,8 +431,8 @@ integration_test_SOURCES = \
 
 integration_test_LDFLAGS = $(BOOST_LDFLAGS)
 integration_test_LDADD = \
-	$(USE_BOOST_SYSTEM_LIB) \
-	$(USE_BOOST_UNIT_TEST_FRAMEWORK_LIB) \
+	$(BOOST_SYSTEM_LIB) \
+	$(BOOST_UNIT_TEST_FRAMEWORK_LIB) \
 	libopflex_agent.la
 
 if RENDERER_OVS
@@ -423,6 +459,9 @@ clean-doc:
 	rm -rf doc/html doc/latex
 clean-local: clean-doc
 	rm -f *.rpm *.deb
+if ENABLE_GRPC
+	-rm -rf cmd/test/gbp.grpc.pb.* cmd/test/gbp.pb.*
+endif
 
 EXTRA_DIST = \
 	rpm/opflex-agent.service \
@@ -439,14 +478,14 @@ RPMDIRS=rpm/BUILD rpm/SOURCES rpm/RPMS rpm/SRPMS
 rpm: dist rpm/${PACKAGE}.spec
 	mkdir -p ${RPMDIRS}
 	cp ${SOURCE_FILE} rpm/SOURCES/
-	rpmbuild ${RPMFLAGS} ${RPM_BUILD_FLAGS} -ba rpm/${PACKAGE}.spec
+	rpmbuild ${RPMFLAGS} -ba rpm/${PACKAGE}.spec
 	cp rpm/RPMS/${ARCH}/*.rpm .
 	cp rpm/SRPMS/*.rpm .
 	rm -rf ${RPMDIRS}
 srpm: dist rpm/${PACKAGE}.spec
 	mkdir -p ${RPMDIRS}
 	cp ${SOURCE_FILE} rpm/SOURCES/
-	rpmbuild ${RPMFLAGS} ${RPM_BUILD_FLAGS} -bs rpm/${PACKAGE}.spec
+	rpmbuild ${RPMFLAGS} -bs rpm/${PACKAGE}.spec
 	cp rpm/SRPMS/*.rpm .
 	rm -rf ${RPMDIRS}
 
@@ -473,6 +512,17 @@ deb: dist
 	mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz
 	cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; \
 		dpkg-buildpackage -us -uc -rfakeroot -b
+	cp $(DEB_PKG_DIR)/*.deb .
+	rm -rf $(DEB_PKG_DIR)
+
+deb-no-renderer: dist
+	- rm -rf  $(DEB_PKG_DIR)
+	mkdir -p $(DEB_PKG_DIR)
+	cp $(SOURCE_FILE) $(DEB_PKG_DIR)/
+	tar -C $(DEB_PKG_DIR)/ -xf $(DEB_PKG_DIR)/$(SOURCE_FILE)
+	mv $(DEB_PKG_DIR)/$(SOURCE_FILE) $(DEB_PKG_DIR)/$(PACKAGE)_$(VERSION).orig.tar.gz
+	cd $(DEB_PKG_DIR)/$(PACKAGE)-$(VERSION)/; \
+		dpkg-buildpackage -us -uc -rfakeroot -b -Pnorenderer
 	cp $(DEB_PKG_DIR)/*.deb .
 	rm -rf $(DEB_PKG_DIR)
 

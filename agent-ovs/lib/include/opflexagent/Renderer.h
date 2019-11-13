@@ -60,6 +60,29 @@ public:
     virtual void stop() = 0;
 
     /**
+     * Is uplink address owned by renderer
+     */
+    virtual bool isUplinkAddressImplemented() {
+        return false;
+    }
+
+    /**
+     * Get uplink address from renderer
+     */
+    virtual boost::asio::ip::address getUplinkAddress() {
+        boost::asio::ip::address addr;
+        return addr;
+    }
+
+    /**
+     * Get uplink mac from renderer
+     */
+    virtual std::string getUplinkMac() {
+        std::string mac;
+        return mac;
+    }
+
+    /**
      * Get the Agent object
      */
     Agent& getAgent() { return agent; }

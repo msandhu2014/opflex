@@ -13,8 +13,10 @@
 
 #include <vector>
 #include <utility>
+#include <rapidjson/document.h>
 
 #include "opflex/modb/ModelMetadata.h"
+#include "opflex/gbp/Policy.h"
 
 #pragma once
 #ifndef OPFLEX_TEST_MOCKOPFLEXSERVER_H
@@ -56,10 +58,12 @@ public:
      * @param peers a list of peers to return in the opflex handshake
      * @param proxies a list of proxies to return in the opflex handshake
      * @param md the model metadata for the server
+     * @param prr_interval_secs how often to wakeup prr timer thread
      */
     MockOpflexServer(int port, uint8_t roles, peer_vec_t peers,
                      std::vector<std::string> proxies,
-                     const modb::ModelMetadata& md);
+                     const modb::ModelMetadata& md,
+                     int prr_interval_secs);
 
     /**
      * Destroy the opflex server
@@ -84,6 +88,14 @@ public:
      * @param file the filename to read in
      */
     void readPolicy(const std::string& file);
+
+    /**
+     * Update policy from RapidJson document
+     *
+     * @param d the RapidJson document to be read in
+     * @param op the Update opcode
+     */
+    void updatePolicy(rapidjson::Document& d, gbp::PolicyUpdateOp op);
 
     /**
      * Enable SSL for connections to opflex peers.  Call before start()

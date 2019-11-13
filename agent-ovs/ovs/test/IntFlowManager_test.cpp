@@ -20,6 +20,7 @@
 #include <modelgbp/gbp/BcastFloodModeEnumT.hpp>
 #include <modelgbp/gbp/RoutingModeEnumT.hpp>
 #include <modelgbp/platform/RemoteInventoryTypeEnumT.hpp>
+#include <modelgbp/gbp/EnforcementPreferenceTypeEnumT.hpp>
 
 #include <opflexagent/logging.h>
 #include <opflexagent/LearningBridgeSource.h>
@@ -61,7 +62,8 @@ public:
     BaseIntFlowManagerFixture()
         : FlowManagerFixture(),
           intFlowManager(agent, switchManager, idGen,
-                         ctZoneManager, pktInHandler),
+                         ctZoneManager, pktInHandler,
+                         tunnelEpManager),
           pktInHandler(agent, intFlowManager),
           policyMgr(agent.getPolicyManager()),
           ep2_port(11), ep4_port(22) {
@@ -118,7 +120,9 @@ public:
                    bool routeOn = true);
 
     /** Initialize routing domain-scoped flow entries */
-    void initExpRd(uint32_t rdId = 1, bool includeSubnets = true);
+    void initExpRd(uint32_t rdId = 1,
+                   bool isUnenforced = false,
+                   bool includeSubnets = true);
 
     /** Initialize endpoint-scoped flow entries */
     void initExpEp(shared_ptr<Endpoint>& ep,
@@ -1152,6 +1156,44 @@ BOOST_FIXTURE_TEST_CASE(ipMapping, VxlanIntFlowManagerFixture) {
     WAIT_FOR_TABLES("nexthop", 500);
 }
 
+BOOST_FIXTURE_TEST_CASE(routingDomainUnenforcedMode, BaseIntFlowManagerFixture) {
+    {
+        Mutator mutator(framework, policyOwner);
+
+        bd0 = space->addGbpBridgeDomain("bd0");
+        rd0 = space->addGbpRoutingDomain("rd0");
+        rd0->setEnforcementPreference(
+             EnforcementPreferenceTypeEnumT::CONST_UNENFORCED);
+        bd0->addGbpBridgeDomainToNetworkRSrc()
+            ->setTargetRoutingDomain(rd0->getURI());
+
+        epg0 = space->addGbpEpGroup("epg0");
+        epg0->addGbpEpGroupToNetworkRSrc()
+            ->setTargetBridgeDomain(bd0->getURI());
+        epg0->addGbpeInstContext()->setEncapId(0xA0A);
+        mutator.commit();
+    }
+
+    start();
+    intFlowManager.setEncapType(IntFlowManager::ENCAP_VXLAN);
+    intFlowManager.start();
+    setConnected();
+
+    intFlowManager.egDomainUpdated(epg0->getURI());
+    intFlowManager.domainUpdated(RoutingDomain::CLASS_ID, rd0->getURI());
+
+    clearExpFlowTables();
+    initExpStatic();
+    initExpEpg(epg0);
+    initExpBd();
+    initExpRd(1, true, false);
+    WAIT_FOR_TABLES("vrf-unenforced", 500);
+
+    /* Note: VRF enforced wont have POL table flow entry, which is
+     * covered as part of several other tests. Not adding a separate
+     * one here */
+}
+
 BOOST_FIXTURE_TEST_CASE(remoteInventoryMode, BaseIntFlowManagerFixture) {
     {
         Mutator mutator(framework, policyOwner);
@@ -1183,7 +1225,7 @@ BOOST_FIXTURE_TEST_CASE(remoteInventoryMode, BaseIntFlowManagerFixture) {
     initExpStatic();
     initExpEpg(epg0);
     initExpBd();
-    initExpRd(1, false);
+    initExpRd(1, false, false);
     WAIT_FOR_TABLES("create", 500);
 
     /* on-link inventory */
@@ -1201,7 +1243,7 @@ BOOST_FIXTURE_TEST_CASE(remoteInventoryMode, BaseIntFlowManagerFixture) {
     initExpStatic(RemoteInventoryTypeEnumT::CONST_ON_LINK);
     initExpEpg(epg0, 0, 1, 1, false, RemoteInventoryTypeEnumT::CONST_ON_LINK);
     initExpBd();
-    initExpRd(1, false);
+    initExpRd(1, false, false);
     WAIT_FOR_TABLES("on_link", 500);
 
     /* complete inventory */
@@ -1219,7 +1261,7 @@ BOOST_FIXTURE_TEST_CASE(remoteInventoryMode, BaseIntFlowManagerFixture) {
     initExpStatic(RemoteInventoryTypeEnumT::CONST_COMPLETE);
     initExpEpg(epg0, 0, 1, 1, false, RemoteInventoryTypeEnumT::CONST_COMPLETE);
     initExpBd();
-    initExpRd(1, false);
+    initExpRd(1, false, false);
     WAIT_FOR_TABLES("complete", 500);
 
 }
@@ -1589,7 +1631,7 @@ BOOST_FIXTURE_TEST_CASE(learningBridge, BaseIntFlowManagerFixture) {
 
 #define ADDF(flow) addExpFlowEntry(expTables, flow)
 enum TABLE {
-    SEC, SRC, SVR, BR, SVH, RT, NAT, LRN, SVD, POL, OUT
+    DROPLOG, SEC, SRC, SNAT_REV, SVR, BR, SVH, RT, SNAT, NAT, LRN, SVD, POL, OUT, EXP_DROPLOG
 };
 
 void BaseIntFlowManagerFixture::initExpStatic(uint8_t remoteInventoryType) {
@@ -1597,10 +1639,13 @@ void BaseIntFlowManagerFixture::initExpStatic(uint8_t remoteInventoryType) {
     uint8_t rmacArr[6];
     memcpy(rmacArr, intFlowManager.getRouterMacAddr(), sizeof(rmacArr));
     string rmac = MAC(rmacArr).toString();
-
-    ADDF(Bldr().table(SEC).priority(25).arp().actions().drop().done());
-    ADDF(Bldr().table(SEC).priority(25).ip().actions().drop().done());
-    ADDF(Bldr().table(SEC).priority(25).ipv6().actions().drop().done());
+    ADDF(Bldr().table(DROPLOG).priority(0).actions().go(SEC).done());
+    ADDF(Bldr().table(SEC).priority(25).arp().actions()
+            .dropLog(SEC).go(EXP_DROPLOG).done());
+    ADDF(Bldr().table(SEC).priority(25).ip().actions()
+            .dropLog(SEC).go(EXP_DROPLOG).done());
+    ADDF(Bldr().table(SEC).priority(25).ipv6().actions()
+            .dropLog(SEC).go(EXP_DROPLOG).done());
     ADDF(Bldr().table(SEC).priority(27).udp().isTpSrc(68).isTpDst(67)
          .actions().go(SRC).done());
     ADDF(Bldr().table(SEC).priority(27).udp6().isTpSrc(546).isTpDst(547)
@@ -1664,6 +1709,7 @@ void BaseIntFlowManagerFixture::initExpEpg(shared_ptr<EpGroup>& epg,
                                            uint8_t remoteInventoryType) {
     IntFlowManager::EncapType encapType = intFlowManager.getEncapType();
     uint32_t tunPort = intFlowManager.getTunnelPort();
+    WAIT_FOR(policyMgr.getVnidForGroup(epg->getURI()), 500);
     uint32_t vnid = policyMgr.getVnidForGroup(epg->getURI()).get();
     address mcast = intFlowManager.getEPGTunnelDst(epg->getURI());
     uint8_t rmacArr[6];
@@ -1790,10 +1836,19 @@ void BaseIntFlowManagerFixture::initExpBd(uint32_t bdId, uint32_t rdId,
 }
 
 // Initialize routing domain-scoped flow entries
-void BaseIntFlowManagerFixture::initExpRd(uint32_t rdId, bool includeSubnets) {
+void BaseIntFlowManagerFixture::initExpRd(uint32_t rdId,
+                                          bool isUnenforced,
+                                          bool includeSubnets) {
     uint32_t tunPort = intFlowManager.getTunnelPort();
 
-    ADDF(Bldr().table(POL).priority(1).reg(RD, rdId).actions().drop().done());
+    ADDF(Bldr().table(POL).priority(1).reg(RD, rdId).actions().
+            dropLog(POL).go(EXP_DROPLOG).done());
+
+    if (isUnenforced) {
+        ADDF(Bldr().table(POL).priority(8442).reg(RD, rdId).
+                                  actions().go(OUT).done());
+    }
+
     if (!includeSubnets) return;
 
     if (tunPort != OFPP_NONE) {
@@ -1812,13 +1867,13 @@ void BaseIntFlowManagerFixture::initExpRd(uint32_t rdId, bool includeSubnets) {
     } else {
         ADDF(Bldr().table(RT).priority(324)
              .ip().reg(RD, rdId).isIpDst("10.20.44.0/24")
-             .actions().drop().done());
+             .actions().dropLog(RT).go(EXP_DROPLOG).done());
         ADDF(Bldr().table(RT).priority(324)
              .ip().reg(RD, rdId).isIpDst("10.20.45.0/24")
-             .actions().drop().done());
+             .actions().dropLog(RT).go(EXP_DROPLOG).done());
         ADDF(Bldr().table(RT).priority(332)
              .ipv6().reg(RD, rdId).isIpv6Dst("2001:db8::/32")
-             .actions().drop().done());
+             .actions().dropLog(RT).go(EXP_DROPLOG).done());
     }
 }
 
@@ -2731,39 +2786,39 @@ void BaseIntFlowManagerFixture::initExpLBService(bool conntrack, bool exposed) {
                  .isCtState("-trk").udp().reg(RD, 1).in(tunPort)
                  .isIpSrc("169.254.169.1").isTpSrc(5353)
                  .actions().pushVlan().move(SEPG12, VLAN)
-                 .ct("table=1,zone=1").done());
+                 .ct("table=2,zone=1").done());
             ADDF(Bldr().table(SVR).priority(101)
                  .isCtState("-trk").udp().reg(RD, 1).in(tunPort)
                  .isIpSrc("169.254.169.2").isTpSrc(5353)
                  .actions().pushVlan().move(SEPG12, VLAN)
-                 .ct("table=1,zone=1").done());
+                 .ct("table=2,zone=1").done());
             ADDF(Bldr().table(SVR).priority(101)
                  .isCtState("-trk").tcp6().reg(RD, 1).in(tunPort)
                  .isIpv6Src("fe80::a9:fe:a9:1").isTpSrc(80)
                  .actions().pushVlan().move(SEPG12, VLAN)
-                 .ct("table=1,zone=1").done());
+                 .ct("table=2,zone=1").done());
             ADDF(Bldr().table(SVR).priority(101)
                  .isCtState("-trk").tcp6().reg(RD, 1).in(tunPort)
                  .isIpv6Src("fe80::a9:fe:a9:2").isTpSrc(80)
                  .actions().pushVlan().move(SEPG12, VLAN)
-                 .ct("table=1,zone=1").done());
+                 .ct("table=2,zone=1").done());
         }
         ADDF(Bldr().table(SVR).priority(100)
              .isCtState("-trk").udp().reg(RD, 1)
              .isIpSrc("169.254.169.1").isTpSrc(5353)
-             .actions().ct("table=1,zone=1").done());
+             .actions().ct("table=2,zone=1").done());
         ADDF(Bldr().table(SVR).priority(100)
              .isCtState("-trk").udp().reg(RD, 1)
              .isIpSrc("169.254.169.2").isTpSrc(5353)
-             .actions().ct("table=1,zone=1").done());
+             .actions().ct("table=2,zone=1").done());
         ADDF(Bldr().table(SVR).priority(100)
              .isCtState("-trk").tcp6().reg(RD, 1)
              .isIpv6Src("fe80::a9:fe:a9:1").isTpSrc(80)
-             .actions().ct("table=1,zone=1").done());
+             .actions().ct("table=2,zone=1").done());
         ADDF(Bldr().table(SVR).priority(100)
              .isCtState("-trk").tcp6().reg(RD, 1)
              .isIpv6Src("fe80::a9:fe:a9:2").isTpSrc(80)
-             .actions().ct("table=1,zone=1").done());
+             .actions().ct("table=2,zone=1").done());
 
         if (exposed) {
             ADDF(Bldr().table(SVR).priority(100)
@@ -3021,7 +3076,7 @@ void BaseIntFlowManagerFixture::initExpLearningBridge() {
         ADDF(Bldr().table(SEC).priority(500).in(s.port)
              .isVlanTci(s.tci, s.mask)
              .actions()
-             .learn("table=7,idle_timeout=300,delete_learned,cookie="
+             .learn("table=10,idle_timeout=300,delete_learned,cookie="
                     + (boost::format("0x%lx") % (ovs_htonll(cookie))).str() +
                     ",NXM_OF_VLAN_TCI[0..12],"
                     "NXM_OF_ETH_DST[]=NXM_OF_ETH_SRC[],"

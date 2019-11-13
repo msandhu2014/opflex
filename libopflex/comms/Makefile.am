@@ -30,17 +30,6 @@ AM_CPPFLAGS += -I$(top_srcdir)/include
 AM_CPPFLAGS += -I$(top_srcdir)/logging/include
 AM_CPPFLAGS += $(OPENSSL_CFLAGS) -DYAJR_HAS_OPENSSL
 
-if HAVE_STATIC_BOOST
-$(info Static boost enabled)
-$(info BOOST_STATIC_LIB_DIR $(BOOST_STATIC_LIB_DIR))
-USE_BOOST_UNIT_TEST_FRAMEWORK_LIB=$(BOOST_STATIC_LIB_DIR)/libboost_test_exec_monitor.a \
-                                  $(BOOST_STATIC_LIB_DIR)/libboost_unit_test_framework.a
-USE_TEST_FLAGS=-DBoost_USE_STATIC_LIBS=ON
-else
-USE_BOOST_UNIT_TEST_FRAMEWORK_LIB=$(BOOST_UNIT_TEST_FRAMEWORK_LIB)
-USE_TEST_FLAGS=-DBOOST_TEST_DYN_LINK
-endif
-
 libcomms_la_CPPFLAGS  = $(AM_CPPFLAGS)
 
 libcomms_la_CXXFLAGS  = $(AM_CXXFLAGS)
@@ -129,6 +118,7 @@ comms_test_SOURCES += test/handlers/error_response/policy_unresolve.cpp
 comms_test_SOURCES += test/handlers/error_response/policy_update.cpp
 comms_test_SOURCES += test/handlers/error_response/send_identity.cpp
 comms_test_SOURCES += test/handlers/error_response/state_report.cpp
+comms_test_SOURCES += test/handlers/error_response/transact.cpp
 comms_test_SOURCES += test/handlers/request/custom.cpp
 comms_test_SOURCES += test/handlers/request/endpoint_declare.cpp
 comms_test_SOURCES += test/handlers/request/endpoint_resolve.cpp
@@ -140,6 +130,7 @@ comms_test_SOURCES += test/handlers/request/policy_unresolve.cpp
 comms_test_SOURCES += test/handlers/request/policy_update.cpp
 comms_test_SOURCES += test/handlers/request/send_identity.cpp
 comms_test_SOURCES += test/handlers/request/state_report.cpp
+comms_test_SOURCES += test/handlers/request/transact.cpp
 comms_test_SOURCES += test/handlers/result_response/custom.cpp
 comms_test_SOURCES += test/handlers/result_response/endpoint_declare.cpp
 comms_test_SOURCES += test/handlers/result_response/endpoint_resolve.cpp
@@ -151,9 +142,10 @@ comms_test_SOURCES += test/handlers/result_response/policy_unresolve.cpp
 comms_test_SOURCES += test/handlers/result_response/policy_update.cpp
 comms_test_SOURCES += test/handlers/result_response/send_identity.cpp
 comms_test_SOURCES += test/handlers/result_response/state_report.cpp
+comms_test_SOURCES += test/handlers/result_response/transact.cpp
 
 comms_test_CPPFLAGS  = $(AM_CPPFLAGS)
-comms_test_CPPFLAGS += $(USE_TEST_FLAGS)
+comms_test_CPPFLAGS += -DBOOST_TEST_DYN_LINK
 comms_test_CPPFLAGS += -DSRCDIR="\"$(abs_srcdir)\""
 comms_test_CPPFLAGS += $(UV_CFLAGS)
 comms_test_CPPFLAGS += $(RAPIDJSON_CFLAGS)
@@ -169,6 +161,6 @@ comms_test_LDFLAGS += $(OPENSSL_LIBS)
 comms_test_LDADD  =
 comms_test_LDADD += libcomms.la
 comms_test_LDADD += ../logging/liblogging.la
-comms_test_LDADD += $(USE_BOOST_UNIT_TEST_FRAMEWORK_LIB)
+comms_test_LDADD += $(BOOST_UNIT_TEST_FRAMEWORK_LIB)
 
 EXTRA_DIST=test/server.pem test/ca.pem

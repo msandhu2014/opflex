@@ -78,6 +78,7 @@ public:
      * Called when the platform config object is updated
      */
     virtual void configUpdated(const opflex::modb::URI&) {}
+
 };
 
 } /* namespace opflexagent */

@@ -28,6 +28,11 @@ namespace flowutils {
 using std::vector;
 using modelgbp::gbpe::L24Classifier;
 
+void match_rdId(FlowBuilder& f, uint32_t rdId)
+{
+    f.reg(6, rdId);
+}
+
 void match_group(FlowBuilder& f, uint16_t prio,
                  uint32_t svnid, uint32_t dvnid) {
     f.priority(prio);
@@ -92,7 +97,7 @@ compute_eff_sub(boost::optional<const network::subnets_t&> sub) {
 typedef std::function<void(FlowBuilder*,
                              boost::asio::ip::address&,
                              uint8_t)> FlowBuilderFunc;
-static bool applyRemoteSub(FlowBuilder& fb, FlowBuilderFunc func,
+static bool applyRemoteSub(FlowBuilder& fb, const FlowBuilderFunc& func,
                            boost::asio::ip::address addr,
                            uint8_t prefixLen, uint16_t ethType) {
     if (addr.is_v4() && ethType != eth::type::ARP && ethType != eth::type::IP)
@@ -106,12 +111,12 @@ static bool applyRemoteSub(FlowBuilder& fb, FlowBuilderFunc func,
 
 typedef std::function<bool(FlowBuilder&, uint16_t)> flow_func;
 static flow_func make_flow_functor(const network::subnet_t& ss,
-                                   FlowBuilderFunc func) {
+                                   const FlowBuilderFunc& func) {
     using std::placeholders::_1;
     using std::placeholders::_2;
 
     boost::system::error_code ec;
-    if (ss.first == "") return NULL;
+    if (ss.first.empty()) return NULL;
     boost::asio::ip::address addr =
         boost::asio::ip::address::from_string(ss.first, ec);
     if (ec) return NULL;
@@ -177,13 +182,26 @@ void add_classifier_entries(L24Classifier& clsfr, ClassAction act,
                         f.flags(flags);
 
                         switch (act) {
-                        case flowutils::CA_REFLEX_REV:
+                        case flowutils::CA_REFLEX_FWD_TRACK:
+                        case flowutils::CA_REFLEX_REV_TRACK:
                             f.conntrackState(0, FlowBuilder::CT_TRACKED);
                             break;
                         case flowutils::CA_REFLEX_REV_ALLOW:
                             f.conntrackState(FlowBuilder::CT_TRACKED |
-                                             FlowBuilder::CT_ESTABLISHED,
+                                             FlowBuilder::CT_ESTABLISHED |
+                                             FlowBuilder::CT_REPLY,
                                              FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_ESTABLISHED |
+                                             FlowBuilder::CT_REPLY |
+                                             FlowBuilder::CT_INVALID |
+                                             FlowBuilder::CT_NEW |
+                                             FlowBuilder::CT_RELATED);
+                            break;
+                        case flowutils::CA_REFLEX_REV_RELATED:
+                            f.conntrackState(FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_RELATED,
+                                             FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_RELATED |
                                              FlowBuilder::CT_ESTABLISHED |
                                              FlowBuilder::CT_INVALID |
                                              FlowBuilder::CT_NEW);
@@ -199,7 +217,9 @@ void add_classifier_entries(L24Classifier& clsfr, ClassAction act,
                         switch (act) {
                         case flowutils::CA_DENY:
                         case flowutils::CA_ALLOW:
+                        case flowutils::CA_REFLEX_FWD_TRACK:
                         case flowutils::CA_REFLEX_FWD:
+                        case flowutils::CA_REFLEX_FWD_EST:
                             if (tcpFlags != TcpFlagsEnumT::CONST_UNSPECIFIED)
                                 match_tcp_flags(f, flagMask);
 
@@ -215,15 +235,27 @@ void add_classifier_entries(L24Classifier& clsfr, ClassAction act,
                         }
 
                         switch (act) {
-                        case flowutils::CA_REFLEX_REV:
+                        case flowutils::CA_REFLEX_FWD_TRACK:
+                        case flowutils::CA_REFLEX_REV_TRACK:
                             f.action().conntrack(0, MFF_REG6, 0, nextTable);
                             break;
                         case flowutils::CA_REFLEX_FWD:
+                            f.conntrackState(FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_NEW,
+                                             FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_NEW);
                             f.action().conntrack(ActionBuilder::CT_COMMIT,
-                                                 MFF_REG6);
-
-                            // fall through
+                                                 MFF_REG6).go(nextTable);
+                            break;
+                        case CA_REFLEX_FWD_EST:
+                            f.conntrackState(FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_ESTABLISHED,
+                                             FlowBuilder::CT_TRACKED |
+                                             FlowBuilder::CT_ESTABLISHED);
+                            f.action().go(nextTable);
+                            break;
                         case flowutils::CA_REFLEX_REV_ALLOW:
+                        case flowutils::CA_REFLEX_REV_RELATED:
                         case flowutils::CA_ALLOW:
                             f.action().go(nextTable);
                             break;

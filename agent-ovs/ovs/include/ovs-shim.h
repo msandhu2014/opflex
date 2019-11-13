@@ -21,6 +21,7 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
     struct ofputil_flow_stats;
     struct ofputil_group_mod;
@@ -188,6 +189,20 @@ extern "C" {
      * pop vlan
      */
     void act_pop_vlan(struct ofpbuf* buf);
+
+    /**
+     * nat
+     */
+    void act_nat(struct ofpbuf* buf,
+                 uint32_t ip_min, /* network order */
+                 uint32_t ip_max, /* network order */
+                 uint16_t proto_min,
+                 uint16_t proto_max,
+                 bool snat);
+    /**
+     * unnat
+     */
+    void act_unnat(struct ofpbuf* buf);
 
     /**
      * conntrack

@@ -168,9 +168,8 @@
  *
  * @subsection cppinit C++
  * The primary interface point into the framework is @ref
- * opflex::ofcore::OFFramework.  You can choose to instantiate your
- * own copy of the framework, or you can use the static default
- * instance.
+ * opflex::ofcore::OFFramework.  You must instantiate your
+ * own copy of the framework.
  *
  * Before you can use the framework, you must initialize it by
  * installing your model metadata.  The model metadata is accessible
@@ -184,7 +183,8 @@
  * // ...
  *
  * using opflex::ofcore::OFFramework;
- * OFFramework::defaultInstance().setModel(mymodel::getMetadata());
+ * OFFramework framework;
+ * framework.setModel(mymodel::getMetadata());
  * @endcode
  *
  * The other critical piece of information required for initialization
@@ -194,19 +194,19 @@
  * and each policy domain is identified by a globally unique domain
  * name.  You can set this identity information by calling:
  * @code
- * OFFramework::defaultInstance()
+ * framework
  *     .setOpflexIdentity("[component name]", "[unique domain]");
  * @endcode
  *
  * You can then start the framework simply by calling:
  * @code
- * OFFramework::defaultInstance().start();
+ * framework.start();
  * @endcode
  *
  * Finally, you can add peers after the framework is started by
  * calling the @ref opflex::ofcore::OFFramework::addPeer method:
  * @code
- * OFFramework::defaultInstance().addPeer("192.168.1.5", 1234);
+ * framework.addPeer("192.168.1.5", 1234);
  * @endcode
  *
  * When connecting to the peer, that peer may provide an additional
@@ -219,7 +219,7 @@
  *
  * To cleanly shut down, you can call:
  * @code
- * OFFramework::defaultInstance().stop();
+ * framework.stop();
  * @endcode
  *
  * @subsection cinit C Wrapper
@@ -627,19 +627,19 @@ namespace ofcore {
  *
  * This class manages configuration and lifecycle for the framework,
  * and provides the primary interface point into the framework.  You
- * can create your own instance, or rely on the static default
- * instance.
+ * must create your own instance.
  *
  * You must first initialize the framework by calling setModel() with
  * your model and then calling start():
  * @code
  * using opflex::ofcore::OFFramework;
- * OFFramework::defaultInstance().setModel(mymodel);
- * OFFramework::defaultInstance().start();
+ * OFFramework framework;
+ * framework.setModel(mymodel);
+ * framework.start();
  * @endcode
  * You can shut down the framework by calling stop():
  * @code
- * OFFramework::defaultInstance().stop();
+ * framework.stop();
  * @endcode
  *
  * Once the framework is initialized, you can interact with the model
@@ -669,11 +669,6 @@ public:
      * [major].[minor].[release]-[build]
      */
     static const std::string& getVersionStr();
-
-    /**
-     * Get the static default instance of the framework.
-     */
-    static OFFramework& defaultInstance();
 
     /**
      * Add the given model metadata to the managed object database.
@@ -716,6 +711,22 @@ public:
      */
     bool setElementMode(
     opflex::ofcore::OFConstants::OpflexElementMode mode_);
+
+    /**
+     * Get the element mode for the opflex element.
+     *
+     * @return stitched or transport mode
+     */
+    opflex::ofcore::OFConstants::OpflexElementMode getElementMode();
+
+    /**
+     * Set the tunnel mac for the opflex element.
+     * Changing the tunnel mac value has the effect of restarting the
+     * opflex connection if framework is in transport mode
+     *
+     * @param mac tunnel MAC on which endpoints reside
+     */
+    void setTunnelMac(const opflex::modb::MAC &mac);
 
     /**
      * set the prr (policy resolve request) timer durarion.
@@ -833,8 +844,7 @@ public:
      * @param hostname the hostname or IP address to connect to
      * @param port the TCP port to connect on
      */
-    virtual void addPeer(const std::string& hostname,
-                         int port);
+    virtual void addPeer(const std::string& hostname, int port);
 
     /**
      * Register the given peer status listener to get updates on the
@@ -879,6 +889,11 @@ public:
          getParent(opflex::modb::class_id_t child_class,
                    const opflex::modb::URI& child);
 
+    /**
+     * Disconnect from all current peers and use the configured
+     * peer list to establish new peers.
+     */
+     virtual void resetAllPeers();
 
 private:
     /**

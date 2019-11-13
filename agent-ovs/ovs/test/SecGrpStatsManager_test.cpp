@@ -71,7 +71,7 @@ public:
         idGen.initNamespace("secGroup");
         createObjects();
         createPolicyObjects();
-        switchManager.setMaxFlowTables(10);
+        switchManager.setMaxFlowTables(IntFlowManager::NUM_FLOW_TABLES);
     }
     virtual ~SecGrpStatsManagerFixture() {
         stop();

@@ -21,8 +21,8 @@ dnl Before doing a release, edit:
 dnl 1. the version in AC_INIT
 dnl 2. the libtool version in VERSION_INFO
 
-m4_define([sdk_pversion], 1)
-m4_define([sdk_sversion], 10)
+m4_define([sdk_pversion], 2)
+m4_define([sdk_sversion], 1)
 m4_define([sdk_iversion], 0)
 AC_INIT([libopflex], [sdk_pversion.sdk_sversion.sdk_iversion])
 AC_SUBST(SDK_MARKETNAME, ["OpFlex Framework"])
@@ -48,7 +48,7 @@ dnl     then increment age.
 dnl  6. If any interfaces have been removed since the last public
 dnl     release, then set age to 0.
 
-AC_SUBST(VERSION_INFO, [10:0:10])
+AC_SUBST(VERSION_INFO, [13:0:13])
 
 dnl ---------------------------------------------------------------
 dnl Initialization
@@ -75,27 +75,6 @@ AC_ARG_WITH(buildversion,
                            [Version number of build]),
             [sdk_bversion=${withval}],
             [sdk_bversion='private'])
-
-# --with-static-boost enables linking with a static boost library
-# Disabled by default
-# --with-static-boost also requires --with-boost that points to
-# boost location with boost static libraries compiled with -fPIC
-# option to enable linking them with shared libraries.
-AC_ARG_WITH([static-boost],
-            [AS_HELP_STRING([--with-static-boost],[Enable static boost support])],
-            [],[with_static_boost=no])
-AS_IF([test "x$with_static_boost" != xno], [
-      AC_ARG_WITH([boost],
-                  [AS_HELP_STRING([--with-boost],[Use boost from location])],
-                  [], [AC_MSG_FAILURE([--with-static-boost given, but --with-boost is missing])])
-])
-AM_CONDITIONAL([HAVE_STATIC_BOOST],[test "x$with_static_boost" != 'xno'])
-if test "x$with_static_boost" != xno; then
-   AC_SUBST(BOOST_STATIC_LIB_DIR, [$with_boost]/lib)
-   AC_MSG_NOTICE([Building with Static boost libraries from $with_boost/lib])
-else
-   AC_MSG_NOTICE([Building without Static boost libraries])
-fi
 
 dnl allow to create final builds with assert()s disabled
 AC_HEADER_ASSERT
@@ -162,7 +141,7 @@ AX_BOOST_UNIT_TEST_FRAMEWORK
 dnl Package-config dependencies
 PKG_CHECK_MODULES([UV], [libuv >= 1.8.0])
 PKG_CHECK_MODULES([OPENSSL], [openssl >= 1.0.1])
-PKG_CHECK_MODULES([RAPIDJSON], [RapidJSON >= 1.0])
+PKG_CHECK_MODULES([RAPIDJSON], [RapidJSON >= 1.1])
 
 dnl Older versions of autoconf don't define docdir
 if test x$docdir = x; then

@@ -7,8 +7,6 @@ import java.util.TreeMap;
 import org.opendaylight.opflex.genie.content.model.mclass.MClass;
 import org.opendaylight.opflex.genie.content.model.mconst.ConstAction;
 import org.opendaylight.opflex.genie.content.model.mconst.MConst;
-import org.opendaylight.opflex.genie.content.model.mnaming.MNameComponent;
-import org.opendaylight.opflex.genie.content.model.mnaming.MNameRule;
 import org.opendaylight.opflex.genie.content.model.mownership.MOwner;
 import org.opendaylight.opflex.genie.content.model.mprop.MProp;
 import org.opendaylight.opflex.genie.content.model.mtype.MType;
@@ -106,7 +104,7 @@ public class FMetaDef
         out.println(aInIndent, "}");
     }
 
-    public static String getClassType(MClass aIn)
+    private static String getClassType(MClass aIn)
     {
         if (isPolicy(aIn))
         {
@@ -169,49 +167,43 @@ public class FMetaDef
         }
     }
 
-    public static boolean isLocalEp(MClass aIn)
+    private static boolean isLocalEp(MClass aIn)
     {
         return aIn.isSubclassOf("epr/LocalEp");
 
     }
 
-    public static boolean isGlobalEp(MClass aIn)
+    private static boolean isGlobalEp(MClass aIn)
     {
         return aIn.isSubclassOf("epr/ReportedEp");
     }
 
-    public static boolean isPolicy(MClass aIn)
+    private static boolean isPolicy(MClass aIn)
     {
         return aIn.isSubclassOf("policy/Component") || aIn.isSubclassOf("policy/Definition");
     }
 
-    public static boolean isObservable(MClass aIn)
+    private static boolean isObservable(MClass aIn)
     {
         return aIn.isSubclassOf("observer/Observable");
     }
 
-    public static boolean isRelationshipSource(MClass aIn)
+    private static boolean isRelationshipSource(MClass aIn)
     {
         return aIn.isConcreteSuperclassOf("relator/Source");
     }
 
-    public static boolean isRelationshipTarget(MClass aIn)
+    private static boolean isRelationshipTarget(MClass aIn)
     {
         return aIn.isConcreteSuperclassOf("relator/Target");
     }
 
-    public static boolean isRelationshipResolver(MClass aIn)
+    private static boolean isRelationshipResolver(MClass aIn)
     {
         return aIn.isConcreteSuperclassOf("relator/Resolver");
     }
 
-    public static  MNameRule getNamingRule(MClass aInClass)
-    {
-        Collection<MNameRule> lNrs = aInClass.findNamingRules();
-        return lNrs.isEmpty() ? null : lNrs.iterator().next();
-    }
-
-    public static String getOwner(MClass aIn)
+    private static String getOwner(MClass aIn)
     {
         Collection<MOwner> lOwners = aIn.findOwners();
         return lOwners.isEmpty() ? (aIn.isConcrete() ? "default" : "abstract") : lOwners.iterator().next().getLID().getName();
@@ -337,49 +329,5 @@ public class FMetaDef
             }
         }
         out.print(aInIndent + 1,")");
-    }
-
-    private void genNamingProps(int aInIndent, MClass aInClass)
-    {
-        MNameRule lNr = getNamingRule(aInClass);
-
-        if (null == lNr)
-        {
-            out.println(aInIndent, "std::vector<prop_id_t>() // no naming rule; assume cardinality of 1 in any containment rule");
-        }
-        else
-        {
-            Collection<MNameComponent> lComps = lNr.getComponents();
-            int lNamePropsCount = 0;
-            for (MNameComponent lIt : lComps)
-            {
-                if (lIt.hasPropName())
-                {
-                    lNamePropsCount++;
-                }
-            }
-            if (0 == lNamePropsCount)
-            {
-                out.println(aInIndent, "std::vector<prop_id_t>() // no naming props in rule " + lNr + "; assume cardinality of 1");
-            }
-            else
-            {
-                out.println(aInIndent, "{ // " + lNr);
-                boolean lIsFirst = true;
-                for (MNameComponent lIt : lComps)
-                {
-                    if (lIt.hasPropName())
-                    {
-                        MProp lProp = aInClass.findProp(lIt.getPropName(),false);
-                        if (null != lProp)
-                        {
-                            out.println(aInIndent + 1, (lIsFirst ? "" : ",") + "(" + lProp.getPropId(aInClass) + ") //" + lProp + " of name component " + lIt);
-                            lIsFirst = false;
-                        }
-                    }
-                }
-                out.println(aInIndent, "}");
-            }
-        }
     }
 }

@@ -25,6 +25,7 @@
 namespace opflexagent {
 
 class Agent;
+class Renderer;
 
 /**
  * The tunnel endpoint manager creates a tunnel termination endpoint
@@ -66,12 +67,24 @@ public:
     }
 
     /**
+     * Get the uplink interface name
+     * @param uplinkInterface sting to populate
+     */
+    void  getUplinkIface(std::string& uplinkInterface) {
+        uplinkInterface = this->uplinkIface;
+    }
+
+    /**
      * Set the VLAN tag set on the uplink interface
      *
      * @param uplinkVlan the vlan tag used on the uplink interface
      */
     void setUplinkVlan(uint16_t uplinkVlan) {
         this->uplinkVlan = uplinkVlan;
+    }
+
+    void setParentRenderer(Renderer *r) {
+        this->renderer = r;
     }
 
     /**
@@ -82,6 +95,15 @@ public:
      * @throws std::out_of_range if there is no such uuid
      */
     const std::string& getTerminationIp(const std::string& uuid);
+
+    /**
+     * Get the mac address for the tunnel endpoint
+     * with the given uuid
+     *
+     * @param uuid the UUID of the tunnel termination endpoint
+     * @throws std::out_of_range if there is no such uuid
+     */
+    const std::string& getTerminationMac(const std::string& uuid);
 
     /**
      * Register a listener for tunnelEp change events
@@ -102,8 +124,18 @@ public:
      */
     void unregisterListener(EndpointListener* listener);
 
+    /**
+     * Check whether given UUID is of the TunnelEp
+     * @param uuid uuid to check
+     * @return whether uuid is tunnelEpUUID
+     */
+    bool isTunnelEp(const std::string &uuid) {
+        return (uuid == tunnelEpUUID);
+    }
+
 private:
     Agent* agent;
+    Renderer* renderer;
     boost::asio::io_service& agent_io;
     long timer_interval;
     std::unique_ptr<boost::asio::deadline_timer> timer;

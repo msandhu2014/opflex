@@ -20,15 +20,11 @@ Group: System Environment/Daemons
 License: EPLv1.0
 URL: https://wiki.opendaylight.org/view/OpFlex:Main
 
-# Add --without dynboost option. Enable by default
-%bcond_without dynboost
-
 BuildRoot: %{_tmppath}/%{name}-%{version}-root
 Source: %{name}-%{version}.tar.gz
 Requires: libopflex >= %{version}
 Requires: libmodelgbp >= %{version}
 Requires: opflex-agent-lib = %{epoch}:%{version}-%{release}
-%if %{with dynboost}
 Requires: boost >= 1.53
 Requires: boost-program-options
 Requires: boost-system
@@ -37,15 +33,15 @@ Requires: boost-thread
 Requires: boost-filesystem
 BuildRequires: boost-devel
 BuildRequires: boost-test
-%endif
 BuildRequires: libopflex-devel
 BuildRequires: libmodelgbp-devel
-BuildRequires: noiro-openvswitch-devel >= 2.6.0
-BuildRequires: noiro-openvswitch-lib >= 2.6.0
+BuildRequires: noiro-openvswitch-devel >= 2.6.7
+BuildRequires: noiro-openvswitch-lib >= 2.6.7
 BuildRequires: doxygen
 BuildRequires: systemd-units
-BuildRequires: rapidjson-devel >= 1.0
+BuildRequires: rapidjson-devel >= 1.1
 BuildRequires: libnetfilter_conntrack-devel >= 1.0
+BuildRequires: devtoolset-7-toolchain
 Requires(pre): shadow-utils
 Requires(post): systemd-units
 Requires(preun): systemd-units
@@ -111,11 +107,9 @@ Development libraries for libopflex_agent
 %setup -q
 
 %build
-%if %{with dynboost}
+. /opt/rh/devtoolset-7/enable
+%define __strip /opt/rh/devtoolset-7/root/usr/bin/strip
 %configure --disable-assert
-%else
-%configure --disable-assert --with-static-boost --with-boost=/usr/local/boost_1_58_0
-%endif
 make %{?_smp_mflags}
 
 %install
@@ -136,10 +130,13 @@ mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/opflex-agent-ovs/endpoints
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/opflex-agent-ovs/services
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/opflex-agent-ovs/ids
 mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/opflex-agent-ovs/mcast
+mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/opflex-agent-ovs/droplog
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/opflex-agent-ovs/conf.d
 
 %check
 %if %{with check}
+    . /opt/rh/devtoolset-7/enable
+    %define __strip /opt/rh/devtoolset-7/root/usr/bin/strip
     make check
 %endif
 
@@ -213,6 +210,7 @@ getent group opflexep >/dev/null || groupadd -r opflexep
 %dir %attr(0775, root, opflexep) %{_localstatedir}/lib/opflex-agent-ovs/services
 %dir %{_localstatedir}/lib/opflex-agent-ovs/mcast
 %dir %{_localstatedir}/lib/opflex-agent-ovs/ids
+%dir %{_localstatedir}/lib/opflex-agent-ovs/droplog
 
 %files -n agent-ovs
 

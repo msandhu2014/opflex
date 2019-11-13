@@ -52,7 +52,7 @@ public:
           mockServer(8009, SERVER_ROLES,
                      list_of(make_pair(SERVER_ROLES, LOCALHOST":8009")),
                      vector<string>(),
-                     md),
+                     md, 60),
           peerStatus(-1), poolHealth(1) {
         mockServer.start();
         WAIT_FOR(mockServer.getListener().isListening(), 1000);
@@ -103,6 +103,7 @@ BOOST_FIXTURE_TEST_CASE( init, ServerFixture ) {
     BOOST_CHECK(OF_IS_SUCCESS(offramework_register_peerstatuslistener(framework,
                                                                       peer_listener)));
     BOOST_CHECK(OF_IS_SUCCESS(offramework_set_model(framework, &md)));
+    BOOST_CHECK(OF_IS_SUCCESS(offramework_set_opflex_identity(framework, "dummy", "test")));
     BOOST_CHECK(OF_IS_SUCCESS(offramework_start(framework)));
     BOOST_CHECK(OF_IS_SUCCESS(offramework_add_peer(framework, LOCALHOST, 8009)));
     WAIT_FOR(peerStatus == OF_PEERSTATUS_READY, 1000)

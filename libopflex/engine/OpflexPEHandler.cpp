@@ -20,14 +20,12 @@
 #include <utility>
 
 #include <rapidjson/document.h>
-#include <boost/foreach.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/ip/address_v4.hpp>
 
 #include "opflex/engine/Processor.h"
 #include "opflex/engine/internal/OpflexPool.h"
-#include "opflex/engine/internal/OpflexConnection.h"
 #include "opflex/engine/internal/OpflexPEHandler.h"
 #include "opflex/logging/internal/logging.hpp"
 #include "opflex/engine/internal/MOSerializer.h"
@@ -59,9 +57,11 @@ public:
     SendIdentityReq(const string& name_,
                     const string& domain_,
                     const optional<string>& location_,
-                    const uint8_t roles_)
+                    const uint8_t roles_,
+                    const string& mac_)
         : OpflexMessage("send_identity", REQUEST),
-          name(name_), domain(domain_), location(location_), roles(roles_) {}
+          name(name_), domain(domain_), location(location_), roles(roles_),
+          mac(mac_) {}
 
     virtual void serializePayload(yajr::rpc::SendHandler& writer) {
         (*this)(writer);
@@ -100,6 +100,20 @@ public:
         if (roles & OFConstants::OBSERVER)
             writer.String("observer");
         writer.EndArray();
+
+        if (roles & OFConstants::POLICY_ELEMENT) {
+            writer.String("data");
+            writer.StartObject();
+            if (!mac.empty()) {
+                writer.String("mac");
+                writer.String(mac.c_str());
+            }
+            writer.String("features");
+            writer.StartArray();
+            writer.String("anycastFallback");
+            writer.EndArray();
+            writer.EndObject();
+        }
         writer.EndObject();
         writer.EndArray();
 
@@ -111,6 +125,7 @@ private:
     string domain;
     optional<string> location;
     uint8_t roles;
+    string mac;
 };
 
 void OpflexPEHandler::connected() {
@@ -121,7 +136,8 @@ void OpflexPEHandler::connected() {
         new SendIdentityReq(pool.getName(),
                             pool.getDomain(),
                             pool.getLocation(),
-                            OFConstants::POLICY_ELEMENT);
+                            OFConstants::POLICY_ELEMENT,
+                            pool.getTunnelMac().toString());
     getConnection()->sendMessage(req, true);
 }
 
@@ -287,9 +303,6 @@ void OpflexPEHandler::handleSendIdentityRes(uint64_t reqId,
             }
         }
     }
-
-    pool.validatePeerSet(peer_set);
-
     if (foundSelf) {
         uint8_t peerRoles = 0;
         if (payload.HasMember("my_role")) {
@@ -314,12 +327,15 @@ void OpflexPEHandler::handleSendIdentityRes(uint64_t reqId,
             }
         }
         pool.setRoles(conn, peerRoles);
+        pool.validatePeerSet(conn,peer_set);
         ready();
     } else {
+        pool.validatePeerSet(conn,peer_set);
         LOG(INFO) << "[" << getConnection()->getRemotePeer() << "] "
                   << "Current peer not found in peer list; closing";
         conn->close();
     }
+
 }
 
 void OpflexPEHandler::handleSendIdentityErr(uint64_t reqId,

@@ -28,6 +28,8 @@
 #include <opflexagent/FSRDConfigSource.h>
 #include <opflexagent/FSLearningBridgeSource.h>
 #include <opflexagent/FSExternalEndpointSource.h>
+#include <opflexagent/FSSnatSource.h>
+#include <opflexagent/FSPacketDropLogConfigSource.h>
 #include <opflexagent/logging.h>
 
 #include <opflexagent/Renderer.h>
@@ -58,10 +60,10 @@ using boost::uuids::basic_random_generator;
 
 Agent::Agent(OFFramework& framework_)
     : framework(framework_), policyManager(framework, agent_io),
-      endpointManager(framework, policyManager), notifServer(agent_io),
-      rendererFwdMode(opflex_elem_t::INVALID_MODE),
+      endpointManager(framework, policyManager), extraConfigManager(framework),
+      notifServer(agent_io),rendererFwdMode(opflex_elem_t::INVALID_MODE),
       started(false), presetFwdMode(opflex_elem_t::INVALID_MODE),
-      spanManager(framework){
+      spanManager(framework, agent_io){
     std::random_device rng;
     std::mt19937 urng(rng());
     uuid = to_string(basic_random_generator<std::mt19937>(urng)());
@@ -127,6 +129,8 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
     static const std::string ENDPOINT_SOURCE_FSPATH("endpoint-sources.filesystem");
     static const std::string ENDPOINT_SOURCE_MODEL_LOCAL("endpoint-sources.model-local");
     static const std::string SERVICE_SOURCE_PATH("service-sources.filesystem");
+    static const std::string SNAT_SOURCE_PATH("snat-sources.filesystem");
+    static const std::string DROP_LOG_CFG_SOURCE_FSPATH("drop-log-config-sources.filesystem");
     static const std::string OPFLEX_PEERS("opflex.peers");
     static const std::string OPFLEX_SSL_MODE("opflex.ssl.mode");
     static const std::string OPFLEX_SSL_CA_STORE("opflex.ssl.ca-store");
@@ -159,6 +163,9 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
     static const std::string OPFLEX_STATS_SECGRP_SETTING("opflex.statistics.security-group.enabled");
     static const std::string OPFLEX_STATS_SECGRP_INTERVAL("opflex.statistics.security-group.interval");
     static const std::string OPFLEX_PRR_INTERVAL("opflex.timers.prr");
+    static const std::string OVSDB_IP_ADDRESS("ovsdb.ip-address");
+    static const std::string OVSDB_PORT("ovsdb.port");
+    static const std::string OVSDB_BRIDGE("ovsdb.bridge");
 
     optional<std::string> logLvl =
         properties.get_optional<std::string>(LOG_LEVEL);
@@ -228,6 +235,22 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
             serviceSourcePaths.insert(v.second.data());
     }
 
+    optional<const ptree&> snatSource =
+        properties.get_child_optional(SNAT_SOURCE_PATH);
+
+    if (snatSource) {
+        for (const ptree::value_type &v : snatSource.get())
+             snatSourcePaths.insert(v.second.data());
+    }
+
+    optional<const ptree&> dropLogCfgSrc =
+        properties.get_child_optional(DROP_LOG_CFG_SOURCE_FSPATH);
+
+    if (dropLogCfgSrc) {
+        for (const ptree::value_type &v : dropLogCfgSrc.get())
+        dropLogCfgSourcePath = v.second.data();
+    }
+
     optional<const ptree&> peers =
         properties.get_child_optional(OPFLEX_PEERS);
     if (peers) {
@@ -277,7 +300,19 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
         loadPlugin("libopflex_agent_renderer_openvswitch.so");
     }
 
-    if(this->rendererFwdMode == opflex::ofcore::OFConstants::INVALID_MODE) {
+    // Following two blocks of code ensure that
+    // In the absence of a mode config: default mode, stitched-mode is chosen
+    // In the presence of a mode config: the last conf file mode setting
+    // overrides the current setting
+
+    bool modeConfigPresent = false;
+    if(properties.get_child_optional(RENDERERS_STITCHED_MODE) ||
+       properties.get_child_optional(RENDERERS_TRANSPORT_MODE)) {
+        modeConfigPresent = true;
+    }
+
+    if(this->rendererFwdMode == opflex::ofcore::OFConstants::INVALID_MODE ||
+       modeConfigPresent) {
         if(this->presetFwdMode != opflex::ofcore::OFConstants::INVALID_MODE) {
             this->rendererFwdMode = this->presetFwdMode;
         } else if(properties.get_child_optional(RENDERERS_TRANSPORT_MODE)) {
@@ -350,6 +385,34 @@ void Agent::setProperties(const boost::property_tree::ptree& properties) {
         }
     }
     LOG(INFO) << "prr timer set to " << prr_timer << " secs";
+    LOG(INFO) << "Agent mode set to " <<
+       ((this->rendererFwdMode == opflex::ofcore::OFConstants::TRANSPORT_MODE)?
+        "transport-mode" : "stitched-mode");
+
+    boost::optional<std::string> ovsdb_ip_addr =
+            properties.get_optional<std::string>(OVSDB_IP_ADDRESS);
+    if (ovsdb_ip_addr) {
+        ovsdbIpAddress = ovsdb_ip_addr.get();
+    } else {
+        ovsdbIpAddress = "127.0.0.1";
+    }
+    boost::optional<unsigned long> ovsdb_port =
+            properties.get_optional<unsigned long>(OVSDB_PORT);
+    if (ovsdb_port) {
+        ovsdbPort = ovsdb_port.get();
+    } else {
+        ovsdbPort = 6640;
+    }
+    boost::optional<std::string> ovsdb_bridge =
+            properties.get_optional<std::string>(OVSDB_BRIDGE);
+    if (ovsdb_bridge) {
+        ovsdbBridge = ovsdb_bridge.get();
+    } else {
+        ovsdbBridge = "br-int";
+    }
+
+    LOG(INFO) << "OVSDB IP address " << ovsdbIpAddress <<
+            ", OVSDB port " << ovsdbPort;
 }
 
 void Agent::applyProperties() {
@@ -367,6 +430,8 @@ void Agent::applyProperties() {
         LOG(ERROR) << "No endpoint sources found in configuration.";
     if (serviceSourcePaths.size() == 0)
         LOG(INFO) << "No service sources found in configuration.";
+    if (snatSourcePaths.size() == 0)
+        LOG(INFO) << "No SNAT sources found in configuration.";
     if (opflexPeers.size() == 0)
         LOG(ERROR) << "No Opflex peers found in configuration";
     if (renderers.size() == 0)
@@ -427,6 +492,7 @@ void Agent::start() {
     root->addGbpeVMUniverse();
     root->addObserverEpStatUniverse();
     root->addObserverPolicyStatUniverse();
+    root->addObserverDropFlowConfigUniverse();
     root->addSpanUniverse();
     root->addEpdrExternalDiscovered();
     root->addEpdrLocalRouteDiscovered();
@@ -480,6 +546,18 @@ void Agent::start() {
         ServiceSource* source =
             new FSServiceSource(&serviceManager, fsWatcher, path);
         serviceSources.emplace_back(source);
+    }
+    for (const std::string& path : snatSourcePaths) {
+        SnatSource* source =
+            new FSSnatSource(&snatManager, fsWatcher, path);
+        snatSources.emplace_back(source);
+    }
+    if(!dropLogCfgSourcePath.empty()) {
+        opflex::modb::URI uri = (opflex::modb::URIBuilder()
+                .addElement("PolicyUniverse").addElement("ObserverDropLogConfig")
+                .build());
+        dropLogCfgSource.reset(new FSPacketDropLogConfigSource(&extraConfigManager,
+                        fsWatcher, dropLogCfgSourcePath, uri));
     }
     fsWatcher.start();
 
@@ -592,6 +670,18 @@ inline void Agent::setSimStatProperties(const std::string& enabled_prop,
     } else {
            props.enabled = false;
     }
+}
+
+void Agent::setUplinkMac(const std::string &mac) {
+    LOG(DEBUG) << "Got TunnelEp MAC " << mac;
+    opflex::modb::MAC _mac = opflex::modb::MAC(mac);
+    framework.setTunnelMac(_mac);
+    if(rendererFwdMode != opflex::ofcore::OFConstants::TRANSPORT_MODE) {
+        return;
+    }
+    for (const host_t& h : opflexPeers)
+        framework.addPeer(h.first, h.second);
+
 }
 
 } /* namespace opflexagent */

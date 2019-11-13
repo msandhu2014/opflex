@@ -15,24 +15,61 @@
 
 #include <opflex/ofcore/OFFramework.h>
 #include <opflex/modb/ObjectListener.h>
+#include <opflexagent/PolicyListener.h>
+#include <opflexagent/SpanListener.h>
 #include <modelgbp/span/Universe.hpp>
+#include <modelgbp/span/Session.hpp>
+#include <modelgbp/span/SrcGrp.hpp>
+#include <modelgbp/span/SrcMember.hpp>
+#include <modelgbp/span/LocalEp.hpp>
+#include <opflexagent/TaskQueue.h>
+#include <opflex/modb/URI.h>
+#include <modelgbp/epr/L2Ep.hpp>
+#include <modelgbp/gbp/DirectionEnumT.hpp>
+
 #include <boost/asio.hpp>
+#include <boost/optional.hpp>
 #include <thread>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <string>
 
 using boost::asio::deadline_timer;
+using namespace std;
+using namespace opflex::modb;
 
 namespace opflexagent {
 
+    using namespace modelgbp::epr;
+    namespace span = modelgbp::span;
+    using namespace span;
+
 /**
- * An abstract interface for classes interested in updates related to
- * the span artifacts
+ * class to represent information on span
  */
 class SpanManager {
+
 public:
+    /**
+     * data holder for source member information
+     */
+        typedef struct {
+            /**
+             * URI pointing to source member
+             */
+            URI uri;
+            /**
+             * direction of traffic flow
+             */
+            unsigned char dir;
+        } srcMemInfo;
+
     /**
      * Instantiate a new span manager
      */
-    SpanManager(opflex::ofcore::OFFramework& framework_);
+    SpanManager(opflex::ofcore::OFFramework& framework_,
+                boost::asio::io_service& agent_io_);
 
     /**
      * Destroy the span manager and clean up all state
@@ -48,11 +85,53 @@ public:
      * Stop the span manager
      */
     void stop();
+
+     /**
+      * retrieve the session state pointer using Session URI as key.
+      * @param[in] uri URI pointing to the Session object.
+      * @return shared pointer to SessionState or none.
+      */
+      boost::optional<shared_ptr<SessionState>>
+          getSessionState(const URI& uri) const;
+
     /**
-     * called when span timer expires. It invokes the update method for span artifacts.
-     * @param[in] ec error code.
+     * Register a listener for span change events
+     *
+     * @param listener the listener functional object that should be
+     * called when changes occur related to the class.  This memory is
+     * owned by the caller and should be freed only after it has been
+     * unregistered.
+     * @see PolicyListener
      */
-    void on_timer_span(const boost::system::error_code& ec);
+    void registerListener(SpanListener* listener);
+
+    /**
+     * Unregister Listener for span change events
+     * @param listener the listener functional object that should be
+     * called when changes occur related to the class.  This memory is
+     * owned by the caller and should be freed only after it has been
+     * unregistered.
+     * @see PolicyListener
+     */
+    void unregisterListener(SpanListener* listener);
+
+    /**
+     * Notify span listeners about an update to the span
+     * configuration.
+     * @param spanURI the URI of the updated span object
+     */
+    void notifyListeners(const URI& spanURI);
+
+    /**
+     * Notify span listeners about a session removal
+     * @param seSt shared pointer to a SessionState object
+     */
+    void notifyListeners(const shared_ptr<SessionState> seSt);
+
+    /**
+     * Notify span listeners to signal all span deletion
+     */
+    void notifyListeners();
 
     /**
      * Listener for changes related to span
@@ -72,9 +151,55 @@ public:
          * @param[in] uri of updated object
          */
         virtual void objectUpdated(opflex::modb::class_id_t class_id,
-                                   const opflex::modb::URI& uri);
+                                   const URI& uri);
+
     private:
+        /**
+         * process session update
+         * @param[in] sess shared pointer to a Session object
+         */
+         void processSession(shared_ptr<Session> sess);
+
+        /**
+        * process source group update
+        * @param[in] srcGrp a shared pointer to the source group object in MODB.
+        */
+        void processSrcGrp(shared_ptr<SrcGrp> srcGrp);
+
+        /**
+         * process destination group update
+         * @param[in] dstGrp  shared pointer to a destination group object
+         * @param[in] sess a reference to a Session object
+         */
+        void processDstGrp(DstGrp& dstGrp, Session& sess);
+        /**
+        * process LocalEp update
+        * @param[in] vUri a vector of uris pointing to the LocalEp objects in  MODB.
+        */
+        void processLocalEp(const srcMemInfo& s);
+
+        /**
+         * process L2EP update
+         * @param[in] l2Ep shared pointer to L2EP object
+         */
+         void processL2Ep(shared_ptr<L2Ep> l2Ep);
+
+         /**
+          * add an end point to session state object
+          * @param[in] lEp shared pointer to LocalEp object
+          * @param[in] l2Ep shared pointer to L2EP object
+          * @param[in] s struct for source member info params
+          */
+          void addEndPoint(shared_ptr<LocalEp> lEp, shared_ptr<L2Ep> l2Ep, const srcMemInfo& i);
+
+          /**
+           * process EP group
+           * @param[in] uri uri pointing to EpGroup
+           */
+          void processEpGroup(const srcMemInfo& s);
+
         SpanManager& spanmanager;
+
     };
 
     /**
@@ -83,8 +208,32 @@ public:
     SpanUniverseListener spanUniverseListener;
     friend class SpanUniverseListener;
 
+    /**
+     * get the URI of the parent of LocalEp object
+     * @param lEp shared pointer to a LocalEpp object
+     * @return optional URI reference
+     */
+    static const boost::optional<URI> getSession(shared_ptr<LocalEp> lEp);
+
 private:
+
+    boost::optional<shared_ptr<SrcMember>> findSrcMem(shared_ptr<LocalEp> lEp);
+
     opflex::ofcore::OFFramework& framework;
+    /**
+     * The span listeners that have been registered
+     */
+    list<SpanListener*> spanListeners;
+    mutex listener_mutex;
+    TaskQueue taskQueue;
+    unordered_map<opflex::modb::URI, shared_ptr<SessionState>>
+            sess_map;
+    unordered_map<URI, shared_ptr<LocalEp>> l2EpUri;
+    // list of URIs to send to listeners
+    unordered_set<URI> notifyUpdate;
+    unordered_set<shared_ptr<SessionState>> notifyDelete;
+    bool isDeletePending = false;
+
 };
 }
 

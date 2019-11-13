@@ -111,19 +111,14 @@ public class FEnumDef extends ItemFormatterTask
      */
     public static FileNameRule transformFileNameRule(FileNameRule aInFnr,Item aInItem)
     {
-        String lTargetModue = getTargetModule(aInItem);
-        String lOldRelativePath = aInFnr.getRelativePath();
-        String lNewRelativePath = lOldRelativePath + "/include/" + Config.getProjName() + "/" + lTargetModue;
-
-        FileNameRule lFnr = new FileNameRule(
+        String lNewRelativePath = aInFnr.getRelativePath() + "/include/" + Config.getProjName() + "/" + getTargetModule(aInItem);
+        return new FileNameRule(
                 lNewRelativePath,
                 null,
                 aInFnr.getFilePrefix(),
                 aInFnr.getFileSuffix(),
                 aInFnr.getFileExtension(),
                 getClassName(aInItem, false));
-
-        return lFnr;
     }
 
     public static Item getSuperHolder(Item aIn)
@@ -174,6 +169,11 @@ public class FEnumDef extends ItemFormatterTask
         }
     }
 
+    public static String getInclTag(Item aInItem)
+    {
+        return "GI_" + getNamespace(aInItem,false).toUpperCase() + '_' + getClassName(aInItem, false).toUpperCase() + "_HPP";
+    }
+
     public void generate()
     {
         genBody(0, getItem());
@@ -181,6 +181,11 @@ public class FEnumDef extends ItemFormatterTask
 
     private void genBody(int aInIndent, Item aIn)
     {
+        out.println(aInIndent,"#pragma once");
+        String lInclTag = getInclTag(aIn);
+        out.println(aInIndent,"#ifndef " + lInclTag);
+        out.println(aInIndent,"#define " + lInclTag);
+
         Item lSuperHolder = getSuperHolder(aIn);
 
         if (null != lSuperHolder)
@@ -192,8 +197,7 @@ public class FEnumDef extends ItemFormatterTask
         }
         else
         {
-            out.println(aInIndent, "#include <boost/cstdint.hpp>");
-            out.println(aInIndent, "#include <cstddef>");
+            out.println(aInIndent, "#include <cstdint>");
         }
         out.println(aInIndent, "namespace " + Config.getProjName() + " {");
         out.println(aInIndent, "namespace " + getNamespace(aIn,false) + " {");
@@ -222,5 +226,6 @@ public class FEnumDef extends ItemFormatterTask
         out.println(aInIndent + 1, "};");
         out.println(aInIndent, "}");
         out.println(aInIndent, "}");
+        out.println(aInIndent,"#endif // " + lInclTag);
     }
 }

@@ -317,6 +317,7 @@ class Peer : public SafeListBaseHook {
     unsigned char choked_     :1;
     unsigned char createFail_ :1;
     unsigned char status_     :3;
+    bool nullTermination = true;
 
   protected:
     /* don't leak memory! */
@@ -393,6 +394,8 @@ class CommunicationPeer : public Peer, virtual public ::yajr::Peer {
         return chunk_size;
     }
 
+    void readBufNoNull(char* buffer,
+                       size_t nread);
     void readBuffer(
             char * buffer,
             size_t nread,

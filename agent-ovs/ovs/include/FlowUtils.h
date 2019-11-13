@@ -29,6 +29,14 @@ class ActionBuilder;
 namespace flowutils {
 
 /**
+ * Add a match against routingDomain ID in REG6
+ *
+ * @param f the flow builder
+ * @param rdId the routing domain ID or the VRF/context ID
+ */
+void match_rdId(FlowBuilder& f, uint32_t rdId);
+
+/**
  * Add a match against source/destination group ID in REG0 and REG2
  *
  * @param f the flow builder
@@ -64,14 +72,26 @@ enum ClassAction {
      */
     CA_REFLEX_FWD,
     /**
+     * Track an established forward flow
+     */
+    CA_REFLEX_FWD_EST,
+    /**
      * Match against empty conntrack state and send to conntrack table,
      * recirculating the flow to nextTable
      */
-    CA_REFLEX_REV,
+    CA_REFLEX_FWD_TRACK,
+    /**
+     * same as above in reverse direction
+     */
+    CA_REFLEX_REV_TRACK,
     /**
      * Match against established conntrack state and go to nextTable
      */
     CA_REFLEX_REV_ALLOW,
+    /**
+     * Match against related flows in reverse direction
+     */
+    CA_REFLEX_REV_RELATED,
 };
 
 /**

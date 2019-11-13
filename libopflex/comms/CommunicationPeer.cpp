@@ -274,6 +274,21 @@ int CommunicationPeer::tcpInit() {
     return 0;
 }
 
+void CommunicationPeer::readBufNoNull(char* buffer,
+                   size_t nread) {
+    VLOG(6) << "nread " << nread;
+    ssIn_.write(buffer, nread);
+
+    boost::scoped_ptr<yajr::rpc::InboundMessage> msg(parseFrame());
+    if (!msg) {
+        LOG(ERROR) << "skipping inbound message";
+        return;
+    }
+
+    msg->process();
+
+}
+
 void CommunicationPeer::readBuffer(
         char * buffer,
         size_t nread,
@@ -429,6 +444,7 @@ void CommunicationPeer::onWrite() {
 }
 
 int CommunicationPeer::write() const {
+    VLOG(4) << this;
 
     if (pendingBytes_) {
 
@@ -453,6 +469,8 @@ int CommunicationPeer::writeIOV(std::vector<iovec>& iov) const {
         << this
         << " IOVEC of size "
         << iov.size()
+        << " on_write "
+        << (void*)on_write
     ;
     assert(iov.size());
 
